@@ -22,6 +22,10 @@ import anthropic
 
 client = anthropic.AsyncAnthropic()
 
+# Cap concurrent Claude calls — prevents 429 rate limit bursts from parallel layers.
+# Raise to 2-3 once you have a higher output token/min quota.
+_CLAUDE_SEM = asyncio.Semaphore(1)
+
 FILE_SEPARATOR_PATTERN = re.compile(
     r"===FILE:\s*(.+?)===\n(.*?)(?====FILE:|\Z)", re.DOTALL
 )
@@ -261,7 +265,11 @@ async def _generate_group(
     params: dict,
     org_config: dict,
 ) -> tuple[str, dict[str, str]]:
-    """Generate one group of files. Returns (group, {path: content})."""
+    """Generate one group of files. Returns (group, {path: content}).
+
+    Acquires the shared semaphore before calling Claude so parallel layers
+    don't burst the output token rate limit. Retries up to 3 times on 429.
+    """
     prompt = _build_batch_prompt(
         manifest=manifest,
         generated=snapshot,
@@ -271,17 +279,27 @@ async def _generate_group(
         params=params,
         org_config=org_config,
     )
-    message = await client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=12000,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    if message.stop_reason == "max_tokens":
-        print(f"[generator] WARNING: group '{group}' was truncated")
-    batch_files = _parse_files(message.content[0].text)
-    print(f"[generator] group='{group}' generated={list(batch_files.keys())}")
-    return group, batch_files
+
+    for attempt in range(4):
+        try:
+            async with _CLAUDE_SEM:
+                message = await client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=12000,
+                    system=SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+            if message.stop_reason == "max_tokens":
+                print(f"[generator] WARNING: group '{group}' was truncated")
+            batch_files = _parse_files(message.content[0].text)
+            print(f"[generator] group='{group}' generated={list(batch_files.keys())}")
+            return group, batch_files
+        except anthropic.RateLimitError:
+            if attempt == 3:
+                raise
+            wait = 60 * (attempt + 1)
+            print(f"[generator] Rate limited on '{group}', retrying in {wait}s (attempt {attempt + 1}/3)")
+            await asyncio.sleep(wait)
 
 
 async def stream_generate_scaffold(hydrated: dict, manifest: list[dict]):
