@@ -232,7 +232,7 @@ async def plan_scaffold(hydrated: dict) -> list[dict]:
 
     message = await client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=4096,
+        max_tokens=8192,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -244,14 +244,23 @@ async def plan_scaffold(hydrated: dict) -> list[dict]:
         raw = re.sub(r"^```[a-z]*\n?", "", raw)
         raw = re.sub(r"\n?```$", "", raw).strip()
 
-    # Remove trailing commas before ] or } (common Claude output quirk)
-    raw = re.sub(r",\s*(\]|\})", r"\1", raw)
+    # Remove trailing commas before ] or } — handles nested structures and multiline
+    raw = re.sub(r",(\s*[\]\}])", r"\1", raw)
+
+    # Strip any trailing content after the closing ] of the top-level array
+    bracket_end = raw.rfind("]")
+    if bracket_end != -1:
+        raw = raw[: bracket_end + 1]
 
     try:
         manifest = json.loads(raw)
     except json.JSONDecodeError as exc:
+        # Show context around the error position to aid debugging
+        pos = exc.pos if hasattr(exc, "pos") else 0
+        snippet = raw[max(0, pos - 120) : pos + 120]
         raise RuntimeError(
-            f"Scaffold planner returned invalid JSON: {exc}\n\nRaw (first 500 chars):\n{raw[:500]}"
+            f"Scaffold planner returned invalid JSON at char {pos}: {exc.msg}\n\n"
+            f"Context around error:\n...{snippet}..."
         ) from exc
     print(f"[scaffold_planner] planned {len(manifest)} files across "
           f"{len({f['group'] for f in manifest})} groups")
