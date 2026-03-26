@@ -16,21 +16,73 @@ export interface Step {
 const STEP_LABELS: Record<string, { label: string; description: string }> = {
   intent_parser: {
     label: "Parse Request",
-    description: "Understanding what you need — cloud, service type, environments",
+    description: "Extracting cloud, stack, resources, environments, and CI/CD requirements",
   },
   config_hydrator: {
     label: "Load Org Config",
-    description: "Applying your org's naming conventions and standards",
+    description: "Applying your org's naming conventions, security standards, and module catalog",
+  },
+  scaffold_planner: {
+    label: "Plan Structure",
+    description: "Designing the repository layout following best practices for the detected stack",
   },
   generator: {
     label: "Generate Files",
-    description: "Building your infrastructure scaffold — this usually takes 20–40 seconds",
+    description: "Writing every file in dependency order — this usually takes 30–60 seconds",
+  },
+  runbook_generator: {
+    label: "Generate Runbook",
+    description: "Synthesising an operational runbook from the generated infrastructure",
   },
   github_pusher: {
     label: "Push to GitHub",
-    description: "Creating the repository, committing files, and opening a PR",
+    description: "Creating the repository, committing all files, and opening a PR",
   },
 };
+
+function StepOutput({ stepId, output }: { stepId: string; output: Record<string, unknown> }) {
+  // Scaffold planner: show group count + file count
+  if (stepId === "scaffold_planner") {
+    const groups = output.groups as string[] | undefined;
+    const files = output.files as number | undefined;
+    return (
+      <div className="text-xs text-gray-600 space-y-1">
+        <p><span className="font-medium">{files}</span> files planned across <span className="font-medium">{groups?.length}</span> groups</p>
+        {groups && (
+          <div className="flex flex-wrap gap-1 mt-1">
+            {groups.map((g) => (
+              <span key={g} className="bg-gray-100 text-gray-600 rounded px-1.5 py-0.5 font-mono text-[10px]">{g}</span>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Generator: show file list
+  if (stepId === "generator" || stepId === "intent_parser") {
+    const files = output.files as string[] | undefined;
+    if (files && Array.isArray(files)) {
+      return (
+        <div className="text-xs text-gray-600">
+          <p className="font-medium mb-1">{files.length} files generated</p>
+          <div className="flex flex-wrap gap-1">
+            {files.map((f) => (
+              <span key={f} className="bg-gray-100 text-gray-600 rounded px-1.5 py-0.5 font-mono text-[10px]">{f}</span>
+            ))}
+          </div>
+        </div>
+      );
+    }
+  }
+
+  // Default: compact JSON
+  return (
+    <pre className="text-xs bg-gray-50 rounded-md p-3 overflow-x-auto text-gray-700 border border-gray-100">
+      {JSON.stringify(output, null, 2)}
+    </pre>
+  );
+}
 
 function StepIcon({ status }: { status: StepStatus }) {
   if (status === "done")
@@ -101,9 +153,7 @@ export function StepProgress({ steps }: { steps: Step[] }) {
 
                 {step.status === "done" && step.output && (
                   <CardContent className="py-3">
-                    <pre className="text-xs bg-gray-50 rounded-md p-3 overflow-x-auto text-gray-700 border border-gray-100">
-                      {JSON.stringify(step.output, null, 2)}
-                    </pre>
+                    <StepOutput stepId={step.id} output={step.output} />
                   </CardContent>
                 )}
               </Card>

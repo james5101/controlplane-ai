@@ -17,19 +17,23 @@ ControlPlane AI is an AI-powered Internal Developer Platform (IDP) that automate
 The agent pipeline is the core of the product. Each step is a discrete module in `api/agent/`:
 
 ```
-Intent Parser → Config Hydrator → Generator → GitHub Pusher
+Intent Parser → Config Hydrator → Scaffold Planner → Generator → Runbook Generator → GitHub Pusher
 ```
 
-- `intent_parser.py` — Interprets the developer's request into structured intent
-- `config_hydrator.py` — Loads org conventions from the database
-- `generator.py` — Derives the file list from intent, generates the full file tree via Claude
-- `github_pusher.py` — Creates the repo and opens a PR
+- `intent_parser.py` — NL → structured intent: stack, cloud, resources[], environments, CI, has_promotion_pipeline
+- `config_hydrator.py` — Loads org conventions from the database (naming, security, modules, tags)
+- `scaffold_planner.py` — Intent + org config → annotated file manifest (path, purpose, group, dependencies). Owns all structural/architectural decisions. Stack-agnostic via Claude prompt — works for Terraform, CDK, Pulumi, React, Next.js, or any framework without code changes.
+- `generator.py` — Consumes the manifest and generates file content in dependency-ordered batches (one Claude call per logical group). Each batch receives the full manifest + already-generated files as reference context.
+- `runbook_generator.py` — Synthesises RUNBOOK.md from the generated file tree + intent
+- `github_pusher.py` — Creates the repo and opens a PR (all files in one commit)
 - `orchestrator.py` — Coordinates all steps
 - `repo_analyzer.py` — Standalone: scans existing repos to extract org conventions
 
-**No templates.** The generator is cloud-agnostic and derives what files to create from the intent (environments, CI provider) and what to put in them from the org config. The org's own conventions are the guardrails.
+**No templates. No hardcoded structure.** The Scaffold Planner uses Claude to produce the canonical file structure for any stack. The Generator fills in content. New stacks (CDK, Pulumi, React, etc.) require only prompt knowledge, not code changes.
 
 **Design rule:** New features must be implemented as discrete agent steps. Never skip or merge steps — this is intentional for debuggability, retries, and future human-in-the-loop checkpoints.
+
+**Generator batching:** Files are grouped by logical unit (e.g. `modules/compute`, `environments/dev`, `ci`) and generated one group at a time. This avoids max_tokens truncation and lets each call cross-reference already-generated files accurately.
 
 ## Database Schema
 Three tables in `api/db/init.sql`:

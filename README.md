@@ -36,27 +36,41 @@ User request (natural language)
         │
         ▼
 ┌─────────────────────┐
-│  1. Intent Parser   │  Extracts: cloud, service type, environments,
-│                     │  CI provider, repo name, special requirements
+│  1. Intent Parser   │  Extracts: stack (Terraform/CDK/React/etc.),
+│                     │  cloud, resources[], environments, CI, promotion
 └──────────┬──────────┘
            │
            ▼
 ┌─────────────────────┐
 │  2. Config Hydrator │  Loads org conventions from DB — naming,
-│                     │  tags, modules, security, env config
+│                     │  tags, modules, security standards
 └──────────┬──────────┘
            │
            ▼
 ┌─────────────────────┐
-│  3. Generator       │  Claude generates the full file tree:
-│                     │  main.tf, variables.tf, outputs.tf,
-│                     │  per-env tfvars, CI workflow, README
+│  3. Scaffold Planner│  Claude designs the repository structure:
+│                     │  annotated file manifest with groups and
+│                     │  dependencies — works for any stack
 └──────────┬──────────┘
            │
            ▼
 ┌─────────────────────┐
-│  4. GitHub Pusher   │  Creates repo, commits scaffold on a
-│                     │  branch, opens PR for developer review
+│  4. Generator       │  Fills in file content, one group at a time
+│                     │  in dependency order — each batch sees all
+│                     │  already-generated files for cross-referencing
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│  5. Runbook Generator│ Synthesises RUNBOOK.md from the generated
+│                     │  file tree — operational docs committed with
+│                     │  the scaffold in the same PR
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│  6. GitHub Pusher   │  Creates repo, commits all files on a branch,
+│                     │  opens PR for developer review
 └─────────────────────┘
 ```
 

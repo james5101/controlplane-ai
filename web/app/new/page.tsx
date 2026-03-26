@@ -21,7 +21,14 @@ const EXAMPLES = [
   "EKS cluster on AWS with dev, staging, and prod environments",
 ];
 
-const PIPELINE_STEPS = ["intent_parser", "config_hydrator", "generator", "github_pusher"];
+const PIPELINE_STEPS = [
+  "intent_parser",
+  "config_hydrator",
+  "scaffold_planner",
+  "generator",
+  "runbook_generator",
+  "github_pusher",
+];
 
 function makeInitialSteps(): Step[] {
   return PIPELINE_STEPS.map((id) => ({
