@@ -87,6 +87,26 @@ export async function saveOrgConfig(configYaml: string): Promise<void> {
   }
 }
 
+// ─── Service catalog ──────────────────────────────────────────────────────────
+
+export interface Service {
+  id: number;
+  repo_name: string;
+  repo_url: string;
+  pr_url: string;
+  cloud: string | null;
+  service_type: string | null;
+  environments: string[];
+  original_request: string | null;
+  created_at: string;
+}
+
+export async function getServices(): Promise<Service[]> {
+  const res = await fetch(`${API_URL}/services/`, { credentials: "include" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
 export interface BootstrapRequest {

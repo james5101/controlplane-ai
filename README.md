@@ -95,7 +95,7 @@ controlplane-ai/
 │   │   └── auth.py              # GitHub OAuth
 │   ├── db/
 │   │   ├── connection.py        # asyncpg pool
-│   │   └── init.sql             # Schema (org_configs table)
+│   │   └── init.sql             # Schema (users, org_configs, bootstrapped_services)
 │   ├── main.py
 │   └── requirements.txt
 ├── web/
@@ -104,8 +104,8 @@ controlplane-ai/
 │   │   ├── orgs/
 │   │   │   ├── analyze/         # Repo analyzer — scan → preview → apply
 │   │   │   └── config/          # Org config YAML editor
-│   │   ├── catalog/             # Service catalog
-│   │   └── templates/           # Template browser
+│   │   ├── catalog/             # Service catalog — all bootstrapped services per workspace
+│   │   └── login/               # GitHub OAuth login page
 │   ├── components/
 │   │   ├── sidebar.tsx
 │   │   └── step-progress.tsx    # Live step status component
@@ -210,7 +210,7 @@ Open source core + hosted SaaS. The hosted version removes self-hosting friction
 | MVP ✓ | Repo Analyzer — extract conventions from existing repos |
 | MVP ✓ | Live SSE streaming — real-time step progress |
 | MVP ✓ | GitHub OAuth — personal + org workspace support |
-| Next | Service catalog — track what's been bootstrapped |
+| MVP ✓ | Service catalog — every bootstrapped service tracked per workspace |
 | Next | Per-org GitHub token storage (secrets manager) |
 | Future | Drift detection — flag repos that diverge from org standards |
 | Future | Private module registry support |

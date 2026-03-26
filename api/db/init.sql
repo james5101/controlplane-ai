@@ -14,3 +14,16 @@ CREATE TABLE IF NOT EXISTS org_configs (
     config  JSONB        NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS bootstrapped_services (
+    id               SERIAL PRIMARY KEY,
+    org_id           TEXT NOT NULL,
+    repo_name        TEXT NOT NULL,
+    repo_url         TEXT NOT NULL,
+    pr_url           TEXT NOT NULL,
+    cloud            TEXT,
+    service_type     TEXT,
+    environments     TEXT[],
+    original_request TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
