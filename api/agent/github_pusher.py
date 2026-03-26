@@ -6,8 +6,14 @@ single commit using the Git tree API, and opens a pull request.
 """
 
 import asyncio
+import secrets
 
 from github import Github, GithubException, InputGitTreeElement
+
+
+def _is_name_conflict(exc: GithubException) -> bool:
+    errors = exc.data.get("errors", []) if isinstance(exc.data, dict) else []
+    return any(e.get("message") == "name already exists on this account" for e in errors)
 
 
 async def push_to_github(
@@ -19,22 +25,31 @@ async def push_to_github(
 ) -> dict:
     gh = Github(github_token)
 
-    repo_name = intent.get("repo_name_hint", "new-service-infra")
+    base_name = intent.get("repo_name_hint", "new-service-infra")
 
-    # Create repo — try org first, fall back to personal account
+    # Resolve owner — org workspace first, fall back to authenticated user
     try:
+        owner = gh.get_organization(github_org_login)
+    except GithubException:
+        owner = gh.get_user()
+
+    # Try base name, then base-XXXX with a random hex suffix on conflict
+    repo = None
+    repo_name = base_name
+    for attempt in range(5):
         try:
-            owner = gh.get_organization(github_org_login)
-        except GithubException:
-            owner = gh.get_user()  # authenticated user — has create_repo
-        repo = owner.create_repo(
-            name=repo_name,
-            description="Scaffolded by ControlPlane AI",
-            private=True,
-            auto_init=True,
-        )
-    except GithubException as e:
-        raise RuntimeError(f"Failed to create repo: {e}")
+            repo = owner.create_repo(
+                name=repo_name,
+                description="Scaffolded by ControlPlane AI",
+                private=True,
+                auto_init=True,
+            )
+            break
+        except GithubException as e:
+            if _is_name_conflict(e) and attempt < 4:
+                repo_name = f"{base_name}-{secrets.token_hex(3)}"
+            else:
+                raise RuntimeError(f"Failed to create repo '{repo_name}': {e}") from e
 
     # GitHub propagates the initial commit asynchronously after auto_init.
     # Retry fetching the default branch until it resolves (usually < 3s).
