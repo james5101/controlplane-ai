@@ -162,6 +162,81 @@ export async function bootstrapService(
   return res.json();
 }
 
+// ─── Phased bootstrap (plan → approve → generate → approve → publish) ─────────
+
+export interface ManifestEntry {
+  path: string;
+  purpose: string;
+  group: string;
+  dependencies: string[];
+}
+
+export interface PlanResponse {
+  session_id: string;
+  manifest: ManifestEntry[];
+  intent: Record<string, unknown>;
+}
+
+export async function planService(payload: BootstrapRequest): Promise<PlanResponse> {
+  const res = await fetch(`${API_URL}/services/bootstrap/plan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Plan failed" }));
+    throw new Error(err.detail ?? "Plan failed");
+  }
+  return res.json();
+}
+
+export async function streamGenerate(
+  sessionId: string,
+  onEvent: (event: Record<string, unknown>) => void
+): Promise<void> {
+  const res = await fetch(`${API_URL}/services/bootstrap/${sessionId}/generate`, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const text = decoder.decode(value, { stream: true });
+    for (const line of text.split("\n")) {
+      if (line.startsWith("data: ")) {
+        try { onEvent(JSON.parse(line.slice(6))); } catch {}
+      }
+    }
+  }
+}
+
+export async function streamPublish(
+  sessionId: string,
+  onEvent: (event: Record<string, unknown>) => void
+): Promise<void> {
+  const res = await fetch(`${API_URL}/services/bootstrap/${sessionId}/publish`, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const text = decoder.decode(value, { stream: true });
+    for (const line of text.split("\n")) {
+      if (line.startsWith("data: ")) {
+        try { onEvent(JSON.parse(line.slice(6))); } catch {}
+      }
+    }
+  }
+}
+
 export async function streamBootstrap(
   payload: BootstrapRequest,
   onEvent: (event: Record<string, unknown>) => void

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Sparkles, ChevronRight, ExternalLink } from "lucide-react";
+import { Sparkles, ChevronRight, ExternalLink, FileText, CheckCircle2, XCircle } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { streamBootstrap } from "@/lib/api";
+import { planService, streamGenerate, streamPublish, ManifestEntry } from "@/lib/api";
 import { StepProgress, Step, StepStatus } from "@/components/step-progress";
 
 const EXAMPLES = [
@@ -21,107 +21,226 @@ const EXAMPLES = [
   "EKS cluster on AWS with dev, staging, and prod environments",
 ];
 
-const PIPELINE_STEPS = [
-  "intent_parser",
-  "config_hydrator",
-  "scaffold_planner",
-  "generator",
-  "runbook_generator",
-  "github_pusher",
-];
-
-function makeInitialSteps(): Step[] {
-  return PIPELINE_STEPS.map((id) => ({
-    id,
-    label: id,
-    description: "",
-    status: "pending" as StepStatus,
-  }));
+function makeStep(id: string): Step {
+  return { id, label: id, description: "", status: "pending" as StepStatus };
 }
 
-type PageState = "form" | "progress";
+type PageState =
+  | "form"
+  | "planning"
+  | "plan_review"
+  | "generating"
+  | "files_review"
+  | "publishing"
+  | "complete"
+  | "error";
+
+// ── Manifest preview grouped by group name ───────────────────────────────────
+function ManifestPreview({ manifest }: { manifest: ManifestEntry[] }) {
+  const groups: Record<string, ManifestEntry[]> = {};
+  for (const entry of manifest) {
+    (groups[entry.group] ??= []).push(entry);
+  }
+  return (
+    <div className="space-y-3">
+      {Object.entries(groups).map(([group, entries]) => (
+        <div key={group}>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">
+            {group}
+          </p>
+          <div className="space-y-1">
+            {entries.map((e) => (
+              <div key={e.path} className="flex items-start gap-2">
+                <FileText className="h-3.5 w-3.5 text-gray-400 mt-0.5 flex-shrink-0" />
+                <div>
+                  <span className="text-xs font-mono text-gray-800">{e.path}</span>
+                  <p className="text-xs text-gray-500">{e.purpose}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Generated file list grouped by directory ─────────────────────────────────
+function FileList({ files }: { files: string[] }) {
+  const groups: Record<string, string[]> = {};
+  for (const f of files) {
+    const dir = f.includes("/") ? f.split("/").slice(0, -1).join("/") : "(root)";
+    (groups[dir] ??= []).push(f);
+  }
+  return (
+    <div className="space-y-3">
+      {Object.entries(groups).map(([dir, paths]) => (
+        <div key={dir}>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">
+            {dir}
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {paths.map((p) => (
+              <span
+                key={p}
+                className="bg-gray-100 text-gray-700 rounded px-1.5 py-0.5 font-mono text-[10px]"
+              >
+                {p.split("/").pop()}
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function NewServicePage() {
   const [pageState, setPageState] = useState<PageState>("form");
   const [request, setRequest] = useState("");
-  const [steps, setSteps] = useState<Step[]>(makeInitialSteps());
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [manifest, setManifest] = useState<ManifestEntry[]>([]);
+  const [generatedFiles, setGeneratedFiles] = useState<string[]>([]);
+  const [generateStep, setGenerateStep] = useState<Step>(makeStep("generator"));
+  const [publishSteps, setPublishSteps] = useState<Step[]>([
+    makeStep("runbook_generator"),
+    makeStep("github_pusher"),
+  ]);
   const [repoUrl, setRepoUrl] = useState<string | null>(null);
   const [prUrl, setPrUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  function updateStepStatus(stepId: string, status: StepStatus, output?: Record<string, unknown>) {
-    setSteps((prev) =>
-      prev.map((s) =>
-        s.id === stepId ? { ...s, status, ...(output !== undefined ? { output } : {}) } : s
-      )
-    );
+  function updateStep<T extends Step>(setter: React.Dispatch<React.SetStateAction<T>>, patch: Partial<T>) {
+    setter((prev) => ({ ...prev, ...patch }));
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!request.trim()) return;
-
-    setSteps(makeInitialSteps());
-    setRepoUrl(null);
-    setPrUrl(null);
-    setError(null);
-    setPageState("progress");
-
-    try {
-      await streamBootstrap({ request }, (event) => {
-        const ev = event as Record<string, unknown>;
-        const step = ev.step as string | undefined;
-        const status = ev.status as string | undefined;
-
-        if (!step) return;
-
-        if (step === "complete") {
-          setRepoUrl(ev.repo_url as string);
-          setPrUrl(ev.pr_url as string);
-          return;
-        }
-
-        if (step === "error") {
-          setError((ev.message as string) ?? "An unexpected error occurred");
-          // Mark the currently running step as error
-          setSteps((prev) =>
-            prev.map((s) => (s.status === "running" ? { ...s, status: "error" } : s))
-          );
-          return;
-        }
-
-        if (status === "running") {
-          updateStepStatus(step, "running");
-        } else if (status === "done") {
-          const output = ev.output as Record<string, unknown> | undefined;
-          updateStepStatus(step, "done", output);
-        }
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
-      setSteps((prev) =>
-        prev.map((s) => (s.status === "running" ? { ...s, status: "error" } : s))
-      );
-    }
+  function updateStepInList(
+    setter: React.Dispatch<React.SetStateAction<Step[]>>,
+    id: string,
+    patch: Partial<Step>
+  ) {
+    setter((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   }
 
   function handleReset() {
     setPageState("form");
-    setSteps(makeInitialSteps());
+    setSessionId(null);
+    setManifest([]);
+    setGeneratedFiles([]);
+    setGenerateStep(makeStep("generator"));
+    setPublishSteps([makeStep("runbook_generator"), makeStep("github_pusher")]);
     setRepoUrl(null);
     setPrUrl(null);
     setError(null);
   }
 
-  // ── Form state ──────────────────────────────────────────────────────────────
+  // ── Phase 1: Plan ────────────────────────────────────────────────────────────
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!request.trim()) return;
+
+    setError(null);
+    setPageState("planning");
+
+    try {
+      const result = await planService({ request });
+      setSessionId(result.session_id);
+      setManifest(result.manifest);
+      setPageState("plan_review");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Planning failed");
+      setPageState("error");
+    }
+  }
+
+  // ── Phase 2: Generate ────────────────────────────────────────────────────────
+  async function handleApproveAndGenerate() {
+    if (!sessionId) return;
+    setGenerateStep(makeStep("generator"));
+    setPageState("generating");
+
+    try {
+      await streamGenerate(sessionId, (event) => {
+        const ev = event as Record<string, unknown>;
+        const step = ev.step as string;
+        const status = ev.status as string;
+
+        if (step === "error") {
+          setError((ev.message as string) ?? "Generation failed");
+          updateStep(setGenerateStep, { status: "error" });
+          setPageState("error");
+          return;
+        }
+
+        if (step === "generator") {
+          if (status === "running") {
+            updateStep(setGenerateStep, { status: "running" });
+          } else if (status === "done") {
+            const files = (ev.output as { files: string[] } | undefined)?.files ?? [];
+            updateStep(setGenerateStep, { status: "done", output: { files } });
+            setGeneratedFiles(files);
+          }
+        }
+      });
+
+      // If we got here without an error event, move to review
+      setPageState((prev) => (prev === "generating" ? "files_review" : prev));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Generation failed");
+      updateStep(setGenerateStep, { status: "error" });
+      setPageState("error");
+    }
+  }
+
+  // ── Phase 3: Publish ─────────────────────────────────────────────────────────
+  async function handleApproveAndPublish() {
+    if (!sessionId) return;
+    setPublishSteps([makeStep("runbook_generator"), makeStep("github_pusher")]);
+    setPageState("publishing");
+
+    try {
+      await streamPublish(sessionId, (event) => {
+        const ev = event as Record<string, unknown>;
+        const step = ev.step as string;
+        const status = ev.status as string;
+
+        if (step === "error") {
+          setError((ev.message as string) ?? "Publish failed");
+          setPublishSteps((prev) =>
+            prev.map((s) => (s.status === "running" ? { ...s, status: "error" } : s))
+          );
+          setPageState("error");
+          return;
+        }
+
+        if (step === "complete") {
+          setRepoUrl(ev.repo_url as string);
+          setPrUrl(ev.pr_url as string);
+          setPageState("complete");
+          return;
+        }
+
+        if (status === "running") {
+          updateStepInList(setPublishSteps, step, { status: "running" });
+        } else if (status === "done") {
+          updateStepInList(setPublishSteps, step, { status: "done" });
+        }
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Publish failed");
+      setPageState("error");
+    }
+  }
+
+  // ── Form ─────────────────────────────────────────────────────────────────────
   if (pageState === "form") {
     return (
       <div className="p-8 max-w-2xl mx-auto">
         <div className="mb-8">
           <h1 className="text-2xl font-bold text-gray-900">New Service</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Describe what you need in plain English. ControlPlane AI will bootstrap a
-            production-ready repo.
+            Describe what you need in plain English. ControlPlane AI will plan the scaffold
+            and ask you to approve before generating or pushing anything.
           </p>
         </div>
 
@@ -130,8 +249,7 @@ export default function NewServicePage() {
             <CardHeader>
               <CardTitle>What do you want to build?</CardTitle>
               <CardDescription>
-                Mention the cloud provider, service type, environments, and any other
-                requirements.
+                Mention the cloud provider, service type, environments, and any other requirements.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -141,8 +259,6 @@ export default function NewServicePage() {
                 onChange={(e) => setRequest(e.target.value)}
                 className="min-h-[120px]"
               />
-
-              {/* Examples */}
               <div>
                 <p className="text-xs text-gray-400 mb-2">Examples:</p>
                 <div className="space-y-1.5">
@@ -163,7 +279,7 @@ export default function NewServicePage() {
             <CardFooter className="justify-end">
               <Button type="submit" disabled={!request.trim()}>
                 <Sparkles className="h-4 w-4" />
-                Bootstrap
+                Plan scaffold
               </Button>
             </CardFooter>
           </Card>
@@ -172,26 +288,148 @@ export default function NewServicePage() {
     );
   }
 
-  // ── Progress state ──────────────────────────────────────────────────────────
-  const isComplete = !!repoUrl;
-  const hasError = !!error;
-
-  return (
-    <div className="p-8 max-w-2xl mx-auto">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900">Bootstrapping…</h1>
-        <p className="text-sm text-gray-500 mt-1 truncate">
-          {request}
-        </p>
+  // ── Planning spinner ──────────────────────────────────────────────────────────
+  if (pageState === "planning") {
+    return (
+      <div className="p-8 max-w-2xl mx-auto">
+        <div className="mb-8">
+          <h1 className="text-2xl font-bold text-gray-900">Planning scaffold…</h1>
+          <p className="text-sm text-gray-500 mt-1 truncate">{request}</p>
+        </div>
+        <StepProgress
+          steps={[
+            { id: "intent_parser", label: "intent_parser", description: "", status: "done" },
+            { id: "config_hydrator", label: "config_hydrator", description: "", status: "done" },
+            { id: "scaffold_planner", label: "scaffold_planner", description: "", status: "running" },
+          ]}
+        />
       </div>
+    );
+  }
 
-      <StepProgress steps={steps} />
+  // ── Plan review ───────────────────────────────────────────────────────────────
+  if (pageState === "plan_review") {
+    const groupCount = new Set(manifest.map((e) => e.group)).size;
+    return (
+      <div className="p-8 max-w-2xl mx-auto">
+        <div className="mb-6">
+          <h1 className="text-2xl font-bold text-gray-900">Review scaffold plan</h1>
+          <p className="text-sm text-gray-500 mt-1 truncate">{request}</p>
+        </div>
 
-      {/* Result links */}
-      {isComplete && (
-        <Card className="mt-6 border-green-200 bg-green-50">
+        <Card className="mb-4 border-blue-200 bg-blue-50">
+          <CardContent className="py-3">
+            <p className="text-sm text-blue-800">
+              <span className="font-semibold">{manifest.length} files</span> across{" "}
+              <span className="font-semibold">{groupCount} groups</span> planned.
+              Review the structure below and approve to start generating file content.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-6">
+          <CardHeader className="py-3">
+            <CardTitle className="text-sm">Planned file structure</CardTitle>
+          </CardHeader>
+          <CardContent className="py-3 max-h-96 overflow-y-auto">
+            <ManifestPreview manifest={manifest} />
+          </CardContent>
+        </Card>
+
+        <div className="flex gap-3">
+          <Button onClick={handleApproveAndGenerate}>
+            <CheckCircle2 className="h-4 w-4" />
+            Approve &amp; generate files
+          </Button>
+          <Button variant="outline" onClick={handleReset}>
+            <XCircle className="h-4 w-4" />
+            Cancel
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Generating ────────────────────────────────────────────────────────────────
+  if (pageState === "generating") {
+    return (
+      <div className="p-8 max-w-2xl mx-auto">
+        <div className="mb-8">
+          <h1 className="text-2xl font-bold text-gray-900">Generating files…</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Writing {manifest.length} files in dependency order. This usually takes 30–90 seconds.
+          </p>
+        </div>
+        <StepProgress steps={[generateStep]} />
+      </div>
+    );
+  }
+
+  // ── Files review ──────────────────────────────────────────────────────────────
+  if (pageState === "files_review") {
+    return (
+      <div className="p-8 max-w-2xl mx-auto">
+        <div className="mb-6">
+          <h1 className="text-2xl font-bold text-gray-900">Review generated files</h1>
+          <p className="text-sm text-gray-500 mt-1 truncate">{request}</p>
+        </div>
+
+        <Card className="mb-4 border-green-200 bg-green-50">
+          <CardContent className="py-3">
+            <p className="text-sm text-green-800">
+              <span className="font-semibold">{generatedFiles.length} files generated.</span>{" "}
+              Approve to generate the runbook and push everything to GitHub.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-6">
+          <CardHeader className="py-3">
+            <CardTitle className="text-sm">Generated files</CardTitle>
+          </CardHeader>
+          <CardContent className="py-3 max-h-80 overflow-y-auto">
+            <FileList files={generatedFiles} />
+          </CardContent>
+        </Card>
+
+        <div className="flex gap-3">
+          <Button onClick={handleApproveAndPublish}>
+            <CheckCircle2 className="h-4 w-4" />
+            Approve &amp; push to GitHub
+          </Button>
+          <Button variant="outline" onClick={handleReset}>
+            <XCircle className="h-4 w-4" />
+            Cancel
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Publishing ────────────────────────────────────────────────────────────────
+  if (pageState === "publishing") {
+    return (
+      <div className="p-8 max-w-2xl mx-auto">
+        <div className="mb-8">
+          <h1 className="text-2xl font-bold text-gray-900">Publishing to GitHub…</h1>
+          <p className="text-sm text-gray-500 mt-1 truncate">{request}</p>
+        </div>
+        <StepProgress steps={publishSteps} />
+      </div>
+    );
+  }
+
+  // ── Complete ──────────────────────────────────────────────────────────────────
+  if (pageState === "complete") {
+    return (
+      <div className="p-8 max-w-2xl mx-auto">
+        <div className="mb-8">
+          <h1 className="text-2xl font-bold text-gray-900">Your repo is ready!</h1>
+          <p className="text-sm text-gray-500 mt-1 truncate">{request}</p>
+        </div>
+
+        <Card className="border-green-200 bg-green-50">
           <CardContent className="py-4 space-y-2">
-            <p className="text-sm font-semibold text-green-800">Your repo is ready!</p>
             <div className="flex flex-col gap-1.5">
               <a
                 href={repoUrl!}
@@ -221,19 +459,24 @@ export default function NewServicePage() {
             </div>
           </CardContent>
         </Card>
-      )}
+      </div>
+    );
+  }
 
-      {/* Error state */}
-      {hasError && (
-        <Card className="mt-6 border-red-200 bg-red-50">
-          <CardContent className="py-4 space-y-3">
-            <p className="text-sm text-red-700">{error}</p>
-            <Button variant="outline" size="sm" onClick={handleReset}>
-              Try again
-            </Button>
-          </CardContent>
-        </Card>
-      )}
+  // ── Error ─────────────────────────────────────────────────────────────────────
+  return (
+    <div className="p-8 max-w-2xl mx-auto">
+      <div className="mb-8">
+        <h1 className="text-2xl font-bold text-gray-900">Something went wrong</h1>
+      </div>
+      <Card className="border-red-200 bg-red-50">
+        <CardContent className="py-4 space-y-3">
+          <p className="text-sm text-red-700">{error}</p>
+          <Button variant="outline" size="sm" onClick={handleReset}>
+            Try again
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   );
 }

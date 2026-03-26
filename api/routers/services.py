@@ -1,6 +1,7 @@
 import json
 import logging
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -13,6 +14,27 @@ from api.db.connection import get_pool
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# ─── In-memory session store for phased bootstrap ─────────────────────────────
+# Keyed by session_id (UUID). Each session holds pipeline state between approval steps.
+_sessions: dict[str, dict] = {}
+SESSION_TTL_HOURS = 2
+
+
+def _purge_expired_sessions() -> None:
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=SESSION_TTL_HOURS)
+    expired = [k for k, v in _sessions.items() if v["created_at"] < cutoff]
+    for k in expired:
+        del _sessions[k]
+
+
+def _get_session(session_id: str, org_id: str) -> dict:
+    session = _sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found or expired")
+    if session["org_id"] != org_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return session
 
 RUNBOOK_STALE_COMMITS = 5
 RUNBOOK_STALE_DAYS = 30
@@ -190,6 +212,128 @@ async def regenerate_runbook(service_id: int, user: dict = Depends(require_works
     )
 
     return {"pr_url": result["pr_url"]}
+
+
+@router.post("/bootstrap/plan")
+async def bootstrap_plan(
+    payload: BootstrapRequest,
+    user: dict = Depends(require_workspace),
+):
+    """
+    Phase 1: Parse intent, load org config, and plan the scaffold.
+    Returns a session_id and the annotated file manifest for user review.
+    The user approves or cancels before proceeding to generation.
+    """
+    from api.agent.intent_parser import parse_intent
+    from api.agent.config_hydrator import hydrate_config
+    from api.agent.scaffold_planner import plan_scaffold
+
+    _purge_expired_sessions()
+
+    intent = await parse_intent(payload.request)
+    intent["original_request"] = payload.request
+    hydrated = await hydrate_config(org_id=user["active_workspace"], intent=intent)
+    manifest = await plan_scaffold(hydrated)
+
+    session_id = str(uuid.uuid4())
+    _sessions[session_id] = {
+        "org_id": user["active_workspace"],
+        "hydrated": hydrated,
+        "manifest": manifest,
+        "file_tree": None,
+        "intent": intent,
+        "created_at": datetime.now(timezone.utc),
+    }
+
+    return {"session_id": session_id, "manifest": manifest, "intent": intent}
+
+
+@router.post("/bootstrap/{session_id}/generate")
+async def bootstrap_generate(
+    session_id: str,
+    user: dict = Depends(require_workspace),
+):
+    """
+    Phase 2: Generate file content for all planned files (SSE stream).
+    User reviews the generated file list and approves before publish.
+    """
+    session = _get_session(session_id, user["active_workspace"])
+
+    async def event_stream():
+        from api.agent.generator import generate_scaffold
+        try:
+            yield f"data: {json.dumps({'step': 'generator', 'status': 'running'})}\n\n"
+            file_tree = await generate_scaffold(session["hydrated"], session["manifest"])
+            session["file_tree"] = file_tree
+            yield f"data: {json.dumps({'step': 'generator', 'status': 'done', 'output': {'files': list(file_tree.keys())}})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'step': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/bootstrap/{session_id}/publish")
+async def bootstrap_publish(
+    session_id: str,
+    user: dict = Depends(require_workspace),
+):
+    """
+    Phase 3: Generate runbook then push everything to GitHub (SSE stream).
+    Called after the user approves the generated file list.
+    Saves the result to the catalog on completion.
+    """
+    session = _get_session(session_id, user["active_workspace"])
+    if session["file_tree"] is None:
+        raise HTTPException(status_code=422, detail="Files not generated yet — call /{session_id}/generate first")
+
+    org_id = session["org_id"]
+
+    async def event_stream():
+        from api.agent.runbook_generator import generate_runbook
+        from api.agent.github_pusher import push_to_github
+
+        intent = session["intent"]
+        hydrated = session["hydrated"]
+        file_tree = dict(session["file_tree"])
+        runbook_md: str | None = None
+
+        try:
+            yield f"data: {json.dumps({'step': 'runbook_generator', 'status': 'running'})}\n\n"
+            runbook_md = await generate_runbook(hydrated, file_tree)
+            file_tree["RUNBOOK.md"] = runbook_md
+            yield f"data: {json.dumps({'step': 'runbook_generator', 'status': 'done'})}\n\n"
+
+            yield f"data: {json.dumps({'step': 'github_pusher', 'status': 'running'})}\n\n"
+            result = await push_to_github(
+                org_id=org_id,
+                intent=intent,
+                file_tree=file_tree,
+                github_token=user["github_token"],
+                github_org_login=org_id,
+            )
+            yield f"data: {json.dumps({'step': 'github_pusher', 'status': 'done'})}\n\n"
+
+            yield f"data: {json.dumps({'step': 'complete', 'repo_url': result['repo_url'], 'pr_url': result['pr_url']})}\n\n"
+
+            try:
+                await _save_service(org_id, result, intent, runbook_md)
+            except Exception:
+                logger.exception("Failed to save service to catalog")
+
+            _sessions.pop(session_id, None)
+
+        except Exception as e:
+            yield f"data: {json.dumps({'step': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/bootstrap", response_model=BootstrapResponse)
