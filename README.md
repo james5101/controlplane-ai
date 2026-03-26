@@ -125,46 +125,74 @@ controlplane-ai/
 
 - Docker and Docker Compose
 - Anthropic API key
-- GitHub personal access token (`repo` scope for private repos, `public_repo` for public)
-- GitHub username or org name to create repos under
+- GitHub OAuth App (for authentication)
 
-### Running locally
+### 1. Create a GitHub OAuth App
+
+Go to **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App** and fill in:
+
+| Field | Value |
+|---|---|
+| Application name | ControlPlane AI (or anything you like) |
+| Homepage URL | `http://localhost:3000` |
+| Authorization callback URL | `http://localhost:8000/auth/github/callback` |
+
+Click **Register application**, then copy the **Client ID** and generate a **Client Secret**.
+
+### 2. Configure environment
 
 ```bash
 git clone https://github.com/james5101/controlplane-ai.git
 cd controlplane-ai
-
-# Configure environment
 cp .env.example .env
-# Edit .env — fill in ANTHROPIC_API_KEY, GITHUB_TOKEN, GITHUB_ORG_LOGIN
+```
 
-# Start everything
-docker compose up
+Edit `.env` and fill in:
+
+```env
+ANTHROPIC_API_KEY=sk-ant-...
+GITHUB_CLIENT_ID=your-oauth-app-client-id
+GITHUB_CLIENT_SECRET=your-oauth-app-client-secret
+JWT_SECRET=any-long-random-string
+```
+
+The remaining variables have sensible defaults for local development and don't need to be changed.
+
+### 3. Start the app
+
+```bash
+docker compose up --build
 ```
 
 - Frontend: http://localhost:3000
 - API: http://localhost:8000
 - API docs: http://localhost:8000/docs
 
-### First run
+> **First run:** Docker will initialise the Postgres database automatically. If you've run the app before without the `users` table, run `docker compose down -v && docker compose up --build` to recreate it.
 
-1. Go to **Analyze Repos** in the sidebar
-2. Paste URLs of 1–5 existing Terraform repos
-3. Review the extracted conventions and click **Apply as Org Config**
-4. Go to **New Service**, describe what you want, click **Bootstrap**
+### 4. First run
 
-If you skip the analyzer, the agent will still generate — it just uses sensible defaults instead of your org's standards.
+1. Open http://localhost:3000 — you'll be redirected to the login page
+2. Click **Sign in with GitHub** and authorise the app
+3. Pick a workspace — your personal account or any GitHub org you belong to
+4. Go to **Analyze Repos**, paste URLs of existing Terraform repos to extract your conventions
+5. Go to **New Service**, describe what you want, click **Bootstrap**
+
+If you skip the analyzer the agent still generates — it just uses sensible defaults instead of your org's conventions.
 
 ---
 
 ## Environment variables
 
-| Variable | Description |
-|---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `GITHUB_TOKEN` | GitHub PAT for repo creation and file fetching |
-| `GITHUB_ORG_LOGIN` | GitHub username or org to create repos under |
-| `DATABASE_URL` | PostgreSQL connection string |
+| Variable | Required | Description |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Yes | Anthropic API key |
+| `GITHUB_CLIENT_ID` | Yes | GitHub OAuth App client ID |
+| `GITHUB_CLIENT_SECRET` | Yes | GitHub OAuth App client secret |
+| `JWT_SECRET` | Yes | Secret used to sign session tokens — any long random string |
+| `GITHUB_OAUTH_CALLBACK_URL` | No | Defaults to `http://localhost:8000/auth/github/callback` |
+| `FRONTEND_URL` | No | Defaults to `http://localhost:3000` |
+| `DATABASE_URL` | No | Defaults to the local Docker Postgres instance |
 
 ---
 
@@ -181,7 +209,7 @@ Open source core + hosted SaaS. The hosted version removes self-hosting friction
 | MVP ✓ | Bootstrap agent — cloud-agnostic Terraform + CI/CD |
 | MVP ✓ | Repo Analyzer — extract conventions from existing repos |
 | MVP ✓ | Live SSE streaming — real-time step progress |
-| Next | Auth flow — GitHub OAuth end-to-end |
+| MVP ✓ | GitHub OAuth — personal + org workspace support |
 | Next | Service catalog — track what's been bootstrapped |
 | Next | Per-org GitHub token storage (secrets manager) |
 | Future | Drift detection — flag repos that diverge from org standards |
