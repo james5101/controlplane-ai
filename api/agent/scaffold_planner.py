@@ -14,6 +14,7 @@ purely content. Separating them means:
 """
 
 import json
+import re
 import anthropic
 
 client = anthropic.AsyncAnthropic()
@@ -237,11 +238,21 @@ async def plan_scaffold(hydrated: dict) -> list[dict]:
     )
 
     raw = message.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1]
-        raw = raw.rsplit("```", 1)[0].strip()
 
-    manifest = json.loads(raw)
+    # Strip markdown code fences (```json ... ``` or ``` ... ```)
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-z]*\n?", "", raw)
+        raw = re.sub(r"\n?```$", "", raw).strip()
+
+    # Remove trailing commas before ] or } (common Claude output quirk)
+    raw = re.sub(r",\s*(\]|\})", r"\1", raw)
+
+    try:
+        manifest = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Scaffold planner returned invalid JSON: {exc}\n\nRaw (first 500 chars):\n{raw[:500]}"
+        ) from exc
     print(f"[scaffold_planner] planned {len(manifest)} files across "
           f"{len({f['group'] for f in manifest})} groups")
     return manifest

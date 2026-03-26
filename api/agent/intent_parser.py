@@ -6,6 +6,7 @@ Output drives the Scaffold Planner and Config Hydrator downstream.
 """
 
 import json
+import re
 import anthropic
 
 client = anthropic.AsyncAnthropic()
@@ -70,6 +71,7 @@ async def parse_intent(request: str) -> dict:
     )
     raw = message.content[0].text.strip()
     if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1]
-        raw = raw.rsplit("```", 1)[0].strip()
+        raw = re.sub(r"^```[a-z]*\n?", "", raw)
+        raw = re.sub(r"\n?```$", "", raw).strip()
+    raw = re.sub(r",\s*(\]|\})", r"\1", raw)
     return json.loads(raw)
