@@ -5,6 +5,8 @@ Creates a new GitHub repository, commits the generated scaffold as a
 single commit using the Git tree API, and opens a pull request.
 """
 
+import asyncio
+
 from github import Github, GithubException, InputGitTreeElement
 
 
@@ -34,9 +36,19 @@ async def push_to_github(
     except GithubException as e:
         raise RuntimeError(f"Failed to create repo: {e}")
 
-    # Build a single commit from the full file tree using the Git tree API
-    default_branch = repo.get_branch(repo.default_branch)
-    base_sha = default_branch.commit.sha
+    # GitHub propagates the initial commit asynchronously after auto_init.
+    # Retry fetching the default branch until it resolves (usually < 3s).
+    base_sha = None
+    for attempt in range(8):
+        try:
+            default_branch = repo.get_branch(repo.default_branch)
+            base_sha = default_branch.commit.sha
+            break
+        except GithubException:
+            if attempt == 7:
+                raise RuntimeError("Timed out waiting for initial commit after repo creation")
+            await asyncio.sleep(1.5)
+
     base_tree = repo.get_git_commit(base_sha).tree
 
     tree_elements = [
