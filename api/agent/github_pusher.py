@@ -5,21 +5,24 @@ Creates a new GitHub repository, commits the generated scaffold as a
 single commit using the Git tree API, and opens a pull request.
 """
 
-import os
 from github import Github, GithubException, InputGitTreeElement
 
 
-async def push_to_github(org_id: str, intent: dict, file_tree: dict[str, str]) -> dict:
-    token = _get_github_token(org_id)
-    gh = Github(token)
+async def push_to_github(
+    org_id: str,
+    intent: dict,
+    file_tree: dict[str, str],
+    github_token: str,
+    github_org_login: str,
+) -> dict:
+    gh = Github(github_token)
 
     repo_name = intent.get("repo_name_hint", "new-service-infra")
-    org_login = _get_org_login(org_id)
 
     # Create repo — try org first, fall back to personal account
     try:
         try:
-            owner = gh.get_organization(org_login)
+            owner = gh.get_organization(github_org_login)
         except GithubException:
             owner = gh.get_user()  # authenticated user — has create_repo
         repo = owner.create_repo(
@@ -74,13 +77,3 @@ async def push_to_github(org_id: str, intent: dict, file_tree: dict[str, str]) -
     )
 
     return {"repo_url": repo.html_url, "pr_url": pr.html_url}
-
-
-def _get_github_token(org_id: str) -> str:
-    # TODO: fetch per-org token from secrets store
-    return os.environ["GITHUB_TOKEN"]
-
-
-def _get_org_login(org_id: str) -> str:
-    # TODO: look up org GitHub login from DB
-    return os.environ["GITHUB_ORG_LOGIN"]

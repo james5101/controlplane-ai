@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { streamAnalyzeRepos, saveOrgConfig } from "@/lib/api";
+// org_id is derived from the authenticated user's JWT on the backend
 import yaml from "js-yaml";
 
 type Step = "repos" | "preview" | "done";
@@ -31,7 +32,6 @@ interface AnalysisResult {
 }
 
 export default function AnalyzeReposPage() {
-  const [orgId, setOrgId] = useState("my-org");
   const [repoUrls, setRepoUrls] = useState<string[]>(["", ""]);
   const [step, setStep] = useState<Step>("repos");
   const [loading, setLoading] = useState(false);
@@ -53,7 +53,7 @@ export default function AnalyzeReposPage() {
     setError(null);
     setScanLog([]);
     try {
-      await streamAnalyzeRepos(orgId, { repo_urls: urls }, (event) => {
+      await streamAnalyzeRepos({ repo_urls: urls }, (event) => {
         const ev = event as Record<string, unknown>;
         const status = ev.status as string | undefined;
         if (status === "running") {
@@ -82,7 +82,7 @@ export default function AnalyzeReposPage() {
       // Merge overrides back into inferred config before saving
       const merged = mergeOverrides(result.inferred_config, overrides);
       const configYaml = yaml.dump(merged, { sortKeys: false, lineWidth: 120 });
-      await saveOrgConfig(orgId, configYaml);
+      await saveOrgConfig(configYaml);
       setStep("done");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to save config");
@@ -96,18 +96,12 @@ export default function AnalyzeReposPage() {
 
   return (
     <div className="p-8 max-w-4xl mx-auto">
-      <div className="mb-8 flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Analyze Existing Repos</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            We scan your existing IaC repos and pull out the conventions that matter —
-            naming patterns, required tags, module sources, and more.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <span className="text-xs text-gray-400">Org ID</span>
-          <Input value={orgId} onChange={e => setOrgId(e.target.value)} className="w-32 h-8 text-xs" placeholder="org-id" />
-        </div>
+      <div className="mb-8">
+        <h1 className="text-2xl font-bold text-gray-900">Analyze Existing Repos</h1>
+        <p className="text-sm text-gray-500 mt-1">
+          We scan your existing IaC repos and pull out the conventions that matter —
+          naming patterns, required tags, module sources, and more.
+        </p>
       </div>
 
       {/* Step indicator */}
@@ -245,7 +239,7 @@ export default function AnalyzeReposPage() {
             <CheckCircle2 className="h-10 w-10 text-green-500 mx-auto" />
             <p className="font-semibold text-green-800">Conventions applied</p>
             <p className="text-sm text-green-700">
-              Every scaffold generated for <strong>{orgId}</strong> will now follow these patterns.
+              Every scaffold generated for your workspace will now follow these patterns.
               {" "}<a href="/orgs/config" className="underline">Edit in Org Config</a> to fine-tune further.
             </p>
           </CardContent>

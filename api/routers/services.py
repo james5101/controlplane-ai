@@ -1,10 +1,11 @@
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from api.agent.orchestrator import run_bootstrap_agent, stream_bootstrap_agent
+from api.auth_utils import require_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,6 @@ router = APIRouter()
 
 
 class BootstrapRequest(BaseModel):
-    org_id: str
     request: str  # natural language input from developer
 
 
@@ -23,14 +23,19 @@ class BootstrapResponse(BaseModel):
 
 
 @router.post("/bootstrap", response_model=BootstrapResponse)
-async def bootstrap_service(payload: BootstrapRequest):
+async def bootstrap_service(
+    payload: BootstrapRequest,
+    user: dict = Depends(require_workspace),
+):
     """
     Core endpoint: takes a natural language request, runs the multi-step
     bootstrap agent, creates a GitHub repo with scaffold, opens a PR.
+    org_id and github_token are derived from the authenticated user's JWT.
     """
     try:
         result = await run_bootstrap_agent(
-            org_id=payload.org_id,
+            org_id=user["active_workspace"],
+            github_token=user["github_token"],
             request=payload.request,
         )
     except RuntimeError as e:
@@ -43,10 +48,18 @@ async def bootstrap_service(payload: BootstrapRequest):
 
 
 @router.post("/bootstrap/stream")
-async def bootstrap_stream(payload: BootstrapRequest):
+async def bootstrap_stream(
+    payload: BootstrapRequest,
+    user: dict = Depends(require_workspace),
+):
     async def event_stream():
-        async for event in stream_bootstrap_agent(payload.org_id, payload.request):
+        async for event in stream_bootstrap_agent(
+            org_id=user["active_workspace"],
+            github_token=user["github_token"],
+            request=payload.request,
+        ):
             yield f"data: {json.dumps(event)}\n\n"
+
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",

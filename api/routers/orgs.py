@@ -1,15 +1,15 @@
 import json
 import logging
-import os
 
 import yaml
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from api.db.connection import get_pool
 from api.agent.config_hydrator import DEFAULT_ORG_CONFIG
 from api.agent.repo_analyzer import analyze_repos as _analyze_repos, stream_analyze_repos as _stream_analyze_repos
+from api.auth_utils import require_workspace
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -23,9 +23,10 @@ class AnalyzeReposRequest(BaseModel):
     repo_urls: list[str]
 
 
-@router.get("/{org_id}/config")
-async def get_org_config(org_id: str):
+@router.get("/config")
+async def get_org_config(user: dict = Depends(require_workspace)):
     """Return the org's config as a YAML string. Falls back to defaults if not set."""
+    org_id = user["active_workspace"]
     pool = await get_pool()
     row = await pool.fetchrow(
         "SELECT config FROM org_configs WHERE org_id = $1", org_id
@@ -34,9 +35,13 @@ async def get_org_config(org_id: str):
     return {"org_id": org_id, "config_yaml": yaml.dump(config, sort_keys=False)}
 
 
-@router.put("/{org_id}/config")
-async def update_org_config(org_id: str, payload: OrgConfigPayload):
+@router.put("/config")
+async def update_org_config(
+    payload: OrgConfigPayload,
+    user: dict = Depends(require_workspace),
+):
     """Parse, validate, and persist the org's config YAML."""
+    org_id = user["active_workspace"]
     try:
         config = yaml.safe_load(payload.config_yaml)
     except yaml.YAMLError as e:
@@ -60,15 +65,16 @@ async def update_org_config(org_id: str, payload: OrgConfigPayload):
     return {"org_id": org_id, "status": "saved"}
 
 
-@router.post("/{org_id}/analyze-repos")
-async def analyze_repos(org_id: str, payload: AnalyzeReposRequest):
+@router.post("/analyze-repos")
+async def analyze_repos(
+    payload: AnalyzeReposRequest,
+    user: dict = Depends(require_workspace),
+):
     """
     Fetch key files from the provided GitHub repos and use Claude to extract
     the org's infrastructure conventions into a .controlplane.yaml-compatible config.
     """
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        raise HTTPException(status_code=500, detail="GITHUB_TOKEN not configured")
+    token = user["github_token"]
     if not payload.repo_urls:
         raise HTTPException(status_code=422, detail="At least one repo URL is required")
 
@@ -83,11 +89,12 @@ async def analyze_repos(org_id: str, payload: AnalyzeReposRequest):
     return result
 
 
-@router.post("/{org_id}/analyze-repos/stream")
-async def analyze_repos_stream(org_id: str, payload: AnalyzeReposRequest):
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        raise HTTPException(status_code=500, detail="GITHUB_TOKEN not configured")
+@router.post("/analyze-repos/stream")
+async def analyze_repos_stream(
+    payload: AnalyzeReposRequest,
+    user: dict = Depends(require_workspace),
+):
+    token = user["github_token"]
     if not payload.repo_urls:
         raise HTTPException(status_code=422, detail="At least one repo URL is required")
 

@@ -12,7 +12,6 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
 import { streamBootstrap } from "@/lib/api";
 import { StepProgress, Step, StepStatus } from "@/components/step-progress";
 
@@ -38,7 +37,6 @@ type PageState = "form" | "progress";
 export default function NewServicePage() {
   const [pageState, setPageState] = useState<PageState>("form");
   const [request, setRequest] = useState("");
-  const [orgId, setOrgId] = useState("my-org");
   const [steps, setSteps] = useState<Step[]>(makeInitialSteps());
   const [repoUrl, setRepoUrl] = useState<string | null>(null);
   const [prUrl, setPrUrl] = useState<string | null>(null);
@@ -63,7 +61,7 @@ export default function NewServicePage() {
     setPageState("progress");
 
     try {
-      await streamBootstrap({ org_id: orgId, request }, (event) => {
+      await streamBootstrap({ request }, (event) => {
         const ev = event as Record<string, unknown>;
         const step = ev.step as string | undefined;
         const status = ev.status as string | undefined;
@@ -155,15 +153,7 @@ export default function NewServicePage() {
                 </div>
               </div>
             </CardContent>
-            <CardFooter className="justify-between items-center">
-              <div className="flex items-center gap-2">
-                <label className="text-xs text-gray-500 whitespace-nowrap">Org ID</label>
-                <Input
-                  value={orgId}
-                  onChange={(e) => setOrgId(e.target.value)}
-                  className="h-7 text-xs w-36"
-                />
-              </div>
+            <CardFooter className="justify-end">
               <Button type="submit" disabled={!request.trim()}>
                 <Sparkles className="h-4 w-4" />
                 Bootstrap

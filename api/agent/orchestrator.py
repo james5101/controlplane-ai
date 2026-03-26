@@ -14,7 +14,7 @@ from api.agent.generator import generate_scaffold
 from api.agent.github_pusher import push_to_github
 
 
-async def stream_bootstrap_agent(org_id: str, request: str):
+async def stream_bootstrap_agent(org_id: str, github_token: str, request: str):
     try:
         yield {"step": "intent_parser", "status": "running"}
         intent = await parse_intent(request)
@@ -30,7 +30,13 @@ async def stream_bootstrap_agent(org_id: str, request: str):
         yield {"step": "generator", "status": "done", "output": {"files": list(file_tree.keys())}}
 
         yield {"step": "github_pusher", "status": "running"}
-        result = await push_to_github(org_id=org_id, intent=intent, file_tree=file_tree)
+        result = await push_to_github(
+            org_id=org_id,
+            intent=intent,
+            file_tree=file_tree,
+            github_token=github_token,
+            github_org_login=org_id,
+        )
         yield {"step": "github_pusher", "status": "done"}
 
         yield {"step": "complete", "repo_url": result["repo_url"], "pr_url": result["pr_url"]}
@@ -38,7 +44,7 @@ async def stream_bootstrap_agent(org_id: str, request: str):
         yield {"step": "error", "message": str(e)}
 
 
-async def run_bootstrap_agent(org_id: str, request: str) -> dict:
+async def run_bootstrap_agent(org_id: str, github_token: str, request: str) -> dict:
     steps = []
 
     # Step 1: Parse intent
@@ -55,7 +61,13 @@ async def run_bootstrap_agent(org_id: str, request: str) -> dict:
     steps.append({"step": "generator", "output": {"files": list(file_tree.keys())}})
 
     # Step 4: Push to GitHub
-    result = await push_to_github(org_id=org_id, intent=intent, file_tree=file_tree)
+    result = await push_to_github(
+        org_id=org_id,
+        intent=intent,
+        file_tree=file_tree,
+        github_token=github_token,
+        github_org_login=org_id,
+    )
     steps.append({"step": "github_pusher", "output": result})
 
     return {

@@ -10,24 +10,22 @@ import {
   CardDescription,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export default function OrgConfigPage() {
-  const [orgId, setOrgId] = useState("my-org");
   const [configYaml, setConfigYaml] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function fetchConfig(id: string) {
+  async function fetchConfig() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_URL}/orgs/${id}/config`);
+      const res = await fetch(`${API_URL}/orgs/config`, { credentials: "include" });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       setConfigYaml(data.config_yaml);
@@ -43,9 +41,10 @@ export default function OrgConfigPage() {
     setSaved(false);
     setError(null);
     try {
-      const res = await fetch(`${API_URL}/orgs/${orgId}/config`, {
+      const res = await fetch(`${API_URL}/orgs/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ config_yaml: configYaml }),
       });
       if (!res.ok) {
@@ -62,7 +61,7 @@ export default function OrgConfigPage() {
   }
 
   useEffect(() => {
-    fetchConfig(orgId);
+    fetchConfig();
   }, []);
 
   return (
@@ -75,16 +74,10 @@ export default function OrgConfigPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Input
-            value={orgId}
-            onChange={(e) => setOrgId(e.target.value)}
-            className="w-36 h-8 text-xs"
-            placeholder="org-id"
-          />
           <Button
             variant="outline"
             size="sm"
-            onClick={() => fetchConfig(orgId)}
+            onClick={fetchConfig}
             disabled={loading}
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
