@@ -2,17 +2,20 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { GitBranch, GitPullRequest, ExternalLink, Plus, Cloud } from "lucide-react";
+import {
+  GitBranch,
+  GitPullRequest,
+  ExternalLink,
+  Plus,
+  Cloud,
+  BookOpen,
+  AlertTriangle,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { getServices, type Service } from "@/lib/api";
 
-const CLOUD_LABELS: Record<string, string> = {
-  aws: "AWS",
-  gcp: "GCP",
-  azure: "Azure",
-};
-
+const CLOUD_LABELS: Record<string, string> = { aws: "AWS", gcp: "GCP", azure: "Azure" };
 const CLOUD_COLORS: Record<string, string> = {
   aws: "bg-orange-500/10 text-orange-400 border-orange-500/20",
   gcp: "bg-blue-500/10 text-blue-400 border-blue-500/20",
@@ -26,6 +29,31 @@ function timeAgo(iso: string): string {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.floor(hrs / 24)}d ago`;
+}
+
+function RunbookBadge({ svc }: { svc: Service }) {
+  if (!svc.runbook_md) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-gray-400">
+        <BookOpen className="h-3 w-3" />
+        No runbook
+      </span>
+    );
+  }
+  if (svc.runbook_stale) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-amber-500">
+        <AlertTriangle className="h-3 w-3" />
+        Runbook stale
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-green-600">
+      <BookOpen className="h-3 w-3" />
+      Runbook
+    </span>
+  );
 }
 
 export default function CatalogPage() {
@@ -81,9 +109,10 @@ export default function CatalogPage() {
       {!loading && !error && services.length > 0 && (
         <div className="flex flex-col gap-3">
           {services.map((svc) => (
-            <div
+            <Link
               key={svc.id}
-              className="flex items-center gap-4 bg-white border border-gray-200 rounded-xl px-5 py-4 hover:border-gray-300 transition-colors"
+              href={`/catalog/${svc.id}`}
+              className="flex items-center gap-4 bg-white border border-gray-200 rounded-xl px-5 py-4 hover:border-gray-300 hover:shadow-sm transition-all"
             >
               {/* Icon */}
               <div className="flex items-center justify-center h-9 w-9 rounded-lg bg-gray-100 shrink-0">
@@ -110,9 +139,7 @@ export default function CatalogPage() {
                     </Badge>
                   )}
                   {svc.environments?.map((env) => (
-                    <Badge key={env} variant="secondary" className="text-xs">
-                      {env}
-                    </Badge>
+                    <Badge key={env} variant="secondary" className="text-xs">{env}</Badge>
                   ))}
                 </div>
                 {svc.original_request && (
@@ -122,13 +149,15 @@ export default function CatalogPage() {
                 )}
               </div>
 
-              {/* Timestamp + links */}
-              <div className="flex items-center gap-3 shrink-0">
+              {/* Right side */}
+              <div className="flex items-center gap-4 shrink-0">
+                <RunbookBadge svc={svc} />
                 <span className="text-xs text-gray-400">{timeAgo(svc.created_at)}</span>
                 <a
                   href={svc.pr_url}
                   target="_blank"
                   rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
                   className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-900 transition-colors"
                 >
                   <GitPullRequest className="h-3.5 w-3.5" />
@@ -138,13 +167,14 @@ export default function CatalogPage() {
                   href={svc.repo_url}
                   target="_blank"
                   rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
                   className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-900 transition-colors"
                 >
                   <ExternalLink className="h-3.5 w-3.5" />
                   Repo
                 </a>
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       )}

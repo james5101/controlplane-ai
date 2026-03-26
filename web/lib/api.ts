@@ -98,11 +98,31 @@ export interface Service {
   service_type: string | null;
   environments: string[];
   original_request: string | null;
+  runbook_md: string | null;
+  runbook_generated_at: string | null;
+  runbook_age_days: number | null;
+  runbook_stale: boolean | null;
+  commits_since_runbook?: number | null;
   created_at: string;
 }
 
 export async function getServices(): Promise<Service[]> {
   const res = await fetch(`${API_URL}/services/`, { credentials: "include" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function getService(id: number): Promise<Service> {
+  const res = await fetch(`${API_URL}/services/${id}`, { credentials: "include" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function regenerateRunbook(id: number): Promise<{ pr_url: string }> {
+  const res = await fetch(`${API_URL}/services/${id}/runbook/regenerate`, {
+    method: "POST",
+    credentials: "include",
+  });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }

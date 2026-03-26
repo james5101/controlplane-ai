@@ -2,15 +2,17 @@
 Bootstrap Agent Orchestrator
 
 Runs the multi-step agent pipeline:
-  1. Intent Parser  — extract structured intent from natural language
-  2. Config Hydrator — apply org conventions from the database
-  3. Generator      — render the full file tree
-  4. GitHub Pusher  — create repo, commit scaffold, open PR
+  1. Intent Parser      — extract structured intent from natural language
+  2. Config Hydrator    — apply org conventions from the database
+  3. Generator          — render the full file tree
+  4. Runbook Generator  — generate RUNBOOK.md, injected into the file tree
+  5. GitHub Pusher      — create repo, commit scaffold + runbook, open PR
 """
 
 from api.agent.intent_parser import parse_intent
 from api.agent.config_hydrator import hydrate_config
 from api.agent.generator import generate_scaffold
+from api.agent.runbook_generator import generate_runbook
 from api.agent.github_pusher import push_to_github
 
 
@@ -29,6 +31,11 @@ async def stream_bootstrap_agent(org_id: str, github_token: str, request: str):
         file_tree = await generate_scaffold(hydrated)
         yield {"step": "generator", "status": "done", "output": {"files": list(file_tree.keys())}}
 
+        yield {"step": "runbook_generator", "status": "running"}
+        runbook_md = await generate_runbook(hydrated, file_tree)
+        file_tree["RUNBOOK.md"] = runbook_md
+        yield {"step": "runbook_generator", "status": "done"}
+
         yield {"step": "github_pusher", "status": "running"}
         result = await push_to_github(
             org_id=org_id,
@@ -39,7 +46,12 @@ async def stream_bootstrap_agent(org_id: str, github_token: str, request: str):
         )
         yield {"step": "github_pusher", "status": "done"}
 
-        yield {"step": "complete", "repo_url": result["repo_url"], "pr_url": result["pr_url"]}
+        yield {
+            "step": "complete",
+            "repo_url": result["repo_url"],
+            "pr_url": result["pr_url"],
+            "runbook_md": runbook_md,
+        }
     except Exception as e:
         yield {"step": "error", "message": str(e)}
 
@@ -60,7 +72,12 @@ async def run_bootstrap_agent(org_id: str, github_token: str, request: str) -> d
     file_tree = await generate_scaffold(hydrated)
     steps.append({"step": "generator", "output": {"files": list(file_tree.keys())}})
 
-    # Step 4: Push to GitHub
+    # Step 4: Generate runbook — injected into file_tree before push
+    runbook_md = await generate_runbook(hydrated, file_tree)
+    file_tree["RUNBOOK.md"] = runbook_md
+    steps.append({"step": "runbook_generator", "output": {"file": "RUNBOOK.md"}})
+
+    # Step 5: Push to GitHub (includes RUNBOOK.md in the same commit)
     result = await push_to_github(
         org_id=org_id,
         intent=intent,
@@ -73,5 +90,6 @@ async def run_bootstrap_agent(org_id: str, github_token: str, request: str) -> d
     return {
         "repo_url": result["repo_url"],
         "pr_url": result["pr_url"],
+        "runbook_md": runbook_md,
         "steps": steps,
     }
