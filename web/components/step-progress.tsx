@@ -1,0 +1,116 @@
+import { CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+
+export type StepStatus = "pending" | "running" | "done" | "error";
+
+export interface Step {
+  id: string;
+  label: string;
+  description: string;
+  status: StepStatus;
+  output?: Record<string, unknown>;
+}
+
+const STEP_LABELS: Record<string, { label: string; description: string }> = {
+  intent_parser: {
+    label: "Parse Request",
+    description: "Understanding what you need — cloud, service type, environments",
+  },
+  config_hydrator: {
+    label: "Load Org Config",
+    description: "Applying your org's naming conventions and standards",
+  },
+  generator: {
+    label: "Generate Files",
+    description: "Building your infrastructure scaffold — this usually takes 20–40 seconds",
+  },
+  github_pusher: {
+    label: "Push to GitHub",
+    description: "Creating the repository, committing files, and opening a PR",
+  },
+};
+
+function StepIcon({ status }: { status: StepStatus }) {
+  if (status === "done")
+    return <CheckCircle2 className="h-5 w-5 text-green-500 flex-shrink-0" />;
+  if (status === "running")
+    return <Loader2 className="h-5 w-5 text-blue-500 animate-spin flex-shrink-0" />;
+  if (status === "error")
+    return <XCircle className="h-5 w-5 text-red-500 flex-shrink-0" />;
+  return <Circle className="h-5 w-5 text-gray-300 flex-shrink-0" />;
+}
+
+function statusBadgeVariant(status: StepStatus) {
+  if (status === "done") return "success" as const;
+  if (status === "running") return "running" as const;
+  if (status === "error") return "error" as const;
+  return "neutral" as const;
+}
+
+function statusLabel(status: StepStatus) {
+  if (status === "done") return "Done";
+  if (status === "running") return "Running";
+  if (status === "error") return "Error";
+  return "Pending";
+}
+
+export function StepProgress({ steps }: { steps: Step[] }) {
+  return (
+    <div className="space-y-3">
+      {steps.map((step, i) => {
+        const meta = STEP_LABELS[step.id] ?? {
+          label: step.label,
+          description: "",
+        };
+        return (
+          <div key={step.id} className="flex gap-4">
+            {/* Connector line */}
+            <div className="flex flex-col items-center">
+              <StepIcon status={step.status} />
+              {i < steps.length - 1 && (
+                <div
+                  className={cn(
+                    "w-px flex-1 mt-1",
+                    step.status === "done" ? "bg-green-200" : "bg-gray-200"
+                  )}
+                />
+              )}
+            </div>
+
+            {/* Card */}
+            <div className="flex-1 pb-3">
+              <Card
+                className={cn(
+                  "transition-all",
+                  step.status === "running" && "border-blue-300 shadow-blue-50 shadow-md",
+                  step.status === "done" && "border-green-200",
+                  step.status === "pending" && "opacity-50"
+                )}
+              >
+                <CardHeader className="py-3">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm">{meta.label}</CardTitle>
+                    <Badge variant={statusBadgeVariant(step.status)}>
+                      {statusLabel(step.status)}
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-0.5">{meta.description}</p>
+                </CardHeader>
+
+                {step.status === "done" && step.output && (
+                  <CardContent className="py-3">
+                    <pre className="text-xs bg-gray-50 rounded-md p-3 overflow-x-auto text-gray-700 border border-gray-100">
+                      {JSON.stringify(step.output, null, 2)}
+                    </pre>
+                  </CardContent>
+                )}
+              </Card>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
