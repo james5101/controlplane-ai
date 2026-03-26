@@ -103,6 +103,7 @@ export default function NewServicePage() {
   const [generatedFiles, setGeneratedFiles] = useState<string[]>([]);
   const [generateStep, setGenerateStep] = useState<Step>(makeStep("generator"));
   const [generateProgress, setGenerateProgress] = useState<string | null>(null);
+  const [lastStableState, setLastStableState] = useState<PageState>("form");
   const [publishSteps, setPublishSteps] = useState<Step[]>([
     makeStep("runbook_generator"),
     makeStep("github_pusher"),
@@ -125,6 +126,7 @@ export default function NewServicePage() {
 
   function handleReset() {
     setPageState("form");
+    setLastStableState("form");
     setSessionId(null);
     setManifest([]);
     setGeneratedFiles([]);
@@ -134,6 +136,14 @@ export default function NewServicePage() {
     setRepoUrl(null);
     setPrUrl(null);
     setError(null);
+  }
+
+  function handleRetry() {
+    setError(null);
+    setGenerateStep(makeStep("generator"));
+    setGenerateProgress(null);
+    setPublishSteps([makeStep("runbook_generator"), makeStep("github_pusher")]);
+    setPageState(lastStableState);
   }
 
   // ── Phase 1: Plan ────────────────────────────────────────────────────────────
@@ -158,6 +168,7 @@ export default function NewServicePage() {
   // ── Phase 2: Generate ────────────────────────────────────────────────────────
   async function handleApproveAndGenerate() {
     if (!sessionId) return;
+    setLastStableState("plan_review");
     setGenerateStep(makeStep("generator"));
     setPageState("generating");
 
@@ -205,6 +216,7 @@ export default function NewServicePage() {
   // ── Phase 3: Publish ─────────────────────────────────────────────────────────
   async function handleApproveAndPublish() {
     if (!sessionId) return;
+    setLastStableState("files_review");
     setPublishSteps([makeStep("runbook_generator"), makeStep("github_pusher")]);
     setPageState("publishing");
 
@@ -477,6 +489,17 @@ export default function NewServicePage() {
   }
 
   // ── Error ─────────────────────────────────────────────────────────────────────
+  const retryLabel: Record<PageState, string> = {
+    form: "Start over",
+    planning: "Start over",
+    plan_review: "Back to plan review",
+    generating: "Back to plan review",
+    files_review: "Back to file review",
+    publishing: "Back to file review",
+    complete: "Start over",
+    error: "Start over",
+  };
+
   return (
     <div className="p-8 max-w-2xl mx-auto">
       <div className="mb-8">
@@ -485,9 +508,16 @@ export default function NewServicePage() {
       <Card className="border-red-200 bg-red-50">
         <CardContent className="py-4 space-y-3">
           <p className="text-sm text-red-700">{error}</p>
-          <Button variant="outline" size="sm" onClick={handleReset}>
-            Try again
-          </Button>
+          <div className="flex gap-2">
+            {lastStableState !== "form" && (
+              <Button size="sm" onClick={handleRetry}>
+                {retryLabel[lastStableState]}
+              </Button>
+            )}
+            <Button variant="outline" size="sm" onClick={handleReset}>
+              Start over
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </div>
