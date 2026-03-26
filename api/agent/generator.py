@@ -15,6 +15,7 @@ This approach scales to any stack (Terraform, CDK, Pulumi, React, anything)
 because structure decisions live in the Scaffold Planner prompt, not here.
 """
 
+import asyncio
 import json
 import re
 import anthropic
@@ -115,68 +116,90 @@ Return ONLY file content blocks. No preamble, no explanation, no markdown outsid
 """
 
 
-def _order_groups(manifest: list[dict]) -> list[str]:
-    """Return group names sorted by dependency order."""
-    groups: dict[str, set] = {}
+def _priority(g: str) -> int:
+    for i, prefix in enumerate(GROUP_ORDER):
+        if g == prefix or g.startswith(prefix):
+            return i
+    return len(GROUP_ORDER)
+
+
+def _compute_layers(manifest: list[dict]) -> list[list[str]]:
+    """
+    Return groups as parallel layers via topological sort.
+
+    Groups within the same layer have no dependencies on each other and can be
+    generated concurrently. Each layer must complete before the next starts so
+    that cross-referencing works correctly.
+    """
+    all_groups: dict[str, set] = {}
     for entry in manifest:
         g = entry["group"]
         deps = set(entry.get("dependencies", []))
-        if g not in groups:
-            groups[g] = deps
-        else:
-            groups[g].update(deps)
+        all_groups.setdefault(g, set()).update(deps)
 
-    # Topological sort
-    ordered: list[str] = []
-    remaining = dict(groups)
+    layers: list[list[str]] = []
+    resolved: set[str] = set()
+    remaining = dict(all_groups)
 
     while remaining:
-        # Find groups whose dependencies are all already ordered
         ready = [
             g for g, deps in remaining.items()
-            if all(d in ordered or d not in remaining for d in deps)
+            if all(d in resolved or d not in all_groups for d in deps)
         ]
         if not ready:
-            # Cycle or unresolvable — fall back to prefix ordering
-            ready = list(remaining.keys())
-
-        # Within the ready set, sort by GROUP_ORDER prefixes
-        def _priority(g: str) -> int:
-            for i, prefix in enumerate(GROUP_ORDER):
-                if g == prefix or g.startswith(prefix):
-                    return i
-            return len(GROUP_ORDER)
+            ready = list(remaining.keys())  # break cycle
 
         ready.sort(key=_priority)
-        pick = ready[0]
-        ordered.append(pick)
-        del remaining[pick]
+        layers.append(ready)
+        resolved.update(ready)
+        for g in ready:
+            del remaining[g]
 
-    return ordered
+    return layers
 
 
 def _build_manifest_summary(manifest: list[dict]) -> str:
     return "\n".join(f"  {e['path']} — {e['purpose']}" for e in manifest)
 
 
-def _build_reference_context(generated: dict[str, str], max_files: int = 8) -> str:
-    """Show already-generated files so the generator can cross-reference them."""
+def _build_reference_context(
+    generated: dict[str, str],
+    group_deps: set[str],
+    manifest: list[dict],
+) -> str:
+    """
+    Show files from dependency groups only — not the entire generated tree.
+    This keeps input tokens bounded as the file_tree grows.
+    """
     if not generated:
         return "(none — this is the first batch)"
+
+    # Collect paths that belong to a dependency group
+    dep_paths = {
+        e["path"] for e in manifest if e["group"] in group_deps
+    }
+    relevant = {p: c for p, c in generated.items() if p in dep_paths}
+
+    if not relevant:
+        # Fall back: show a few of the most recent files
+        relevant = dict(list(generated.items())[-4:])
+
     lines = []
-    for path, content in list(generated.items())[:max_files]:
-        # Show full content for small files, truncated for large ones
-        preview = content if len(content) < 1200 else content[:1200] + "\n# ... (truncated for brevity)"
+    for path, content in relevant.items():
+        preview = content if len(content) < 800 else content[:800] + "\n# ... (truncated)"
         lines.append(f"===REFERENCE: {path}===\n{preview}")
-    if len(generated) > max_files:
-        remaining = list(generated.keys())[max_files:]
-        lines.append(f"# (plus {len(remaining)} more already generated: {', '.join(remaining)})")
+
+    extra = set(generated) - set(relevant)
+    if extra:
+        lines.append(f"# (plus {len(extra)} other generated files: {', '.join(sorted(extra))})")
+
     return "\n\n".join(lines)
 
 
 def _build_batch_prompt(
     manifest: list[dict],
     generated: dict[str, str],
+    group_deps: set[str],
     files_to_generate: list[str],
     intent: dict,
     params: dict,
@@ -188,7 +211,7 @@ def _build_batch_prompt(
 {_build_manifest_summary(manifest)}
 
 ## Already-generated files (reference for variable names, module sources, outputs)
-{_build_reference_context(generated)}
+{_build_reference_context(generated, group_deps, manifest)}
 
 ## Files to generate NOW
 {chr(10).join(f"  {p}" for p in files_to_generate)}
@@ -228,58 +251,118 @@ Generate the files listed above now. Be complete — no stubs, no ellipsis.
 """
 
 
-async def generate_scaffold(hydrated: dict, manifest: list[dict]) -> dict[str, str]:
-    """
-    Generate file content for every file in the manifest.
+async def _generate_group(
+    group: str,
+    files_in_group: list[str],
+    group_deps: set[str],
+    snapshot: dict[str, str],
+    manifest: list[dict],
+    intent: dict,
+    params: dict,
+    org_config: dict,
+) -> tuple[str, dict[str, str]]:
+    """Generate one group of files. Returns (group, {path: content})."""
+    prompt = _build_batch_prompt(
+        manifest=manifest,
+        generated=snapshot,
+        group_deps=group_deps,
+        files_to_generate=files_in_group,
+        intent=intent,
+        params=params,
+        org_config=org_config,
+    )
+    message = await client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=12000,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    if message.stop_reason == "max_tokens":
+        print(f"[generator] WARNING: group '{group}' was truncated")
+    batch_files = _parse_files(message.content[0].text)
+    print(f"[generator] group='{group}' generated={list(batch_files.keys())}")
+    return group, batch_files
 
-    Files are generated in dependency-ordered batches (one call per group).
-    Each batch receives already-generated files as reference context.
+
+async def stream_generate_scaffold(hydrated: dict, manifest: list[dict]):
+    """
+    Async generator that yields progress events and the final file_tree.
+
+    Groups in the same dependency layer are generated in parallel (asyncio.gather).
+    Each layer completes before the next starts so cross-referencing stays accurate.
+
+    Yields dicts:
+      {"type": "layer_start",  "layer": int, "total_layers": int, "groups": [str]}
+      {"type": "batch_done",   "group": str, "files": [str], "batch": int, "total_batches": int}
+      {"type": "complete",     "file_tree": dict}
     """
     intent = hydrated["intent"]
     params = hydrated["params"]
     org_config = hydrated["org_config"]
 
-    # Group files by their group field
     groups: dict[str, list[str]] = {}
-    path_to_entry: dict[str, dict] = {e["path"]: e for e in manifest}
     for entry in manifest:
         groups.setdefault(entry["group"], []).append(entry["path"])
 
-    ordered_groups = _order_groups(manifest)
+    # Build dependency map per group for scoped reference context
+    group_dep_map: dict[str, set[str]] = {}
+    for entry in manifest:
+        g = entry["group"]
+        group_dep_map.setdefault(g, set()).update(entry.get("dependencies", []))
+
+    layers = _compute_layers(manifest)
+    total_batches = sum(len(layer) for layer in layers)
+    batch_num = 0
     file_tree: dict[str, str] = {}
 
-    for group in ordered_groups:
-        files_in_group = groups.get(group, [])
-        if not files_in_group:
-            continue
+    for layer_idx, layer in enumerate(layers):
+        yield {
+            "type": "layer_start",
+            "layer": layer_idx + 1,
+            "total_layers": len(layers),
+            "groups": layer,
+        }
 
-        prompt = _build_batch_prompt(
-            manifest=manifest,
-            generated=file_tree,
-            files_to_generate=files_in_group,
-            intent=intent,
-            params=params,
-            org_config=org_config,
-        )
+        # Snapshot the tree before this layer — all parallel calls use the same base
+        snapshot = dict(file_tree)
 
-        message = await client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=12000,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        tasks = [
+            _generate_group(
+                group=g,
+                files_in_group=groups.get(g, []),
+                group_deps=group_dep_map.get(g, set()),
+                snapshot=snapshot,
+                manifest=manifest,
+                intent=intent,
+                params=params,
+                org_config=org_config,
+            )
+            for g in layer
+            if groups.get(g)
+        ]
 
-        raw = message.content[0].text
-        stop_reason = message.stop_reason
-        batch_files = _parse_files(raw)
+        results = await asyncio.gather(*tasks)
 
-        if stop_reason == "max_tokens":
-            print(f"[generator] WARNING: group '{group}' was truncated — consider splitting")
+        for group, batch_files in results:
+            batch_num += 1
+            file_tree.update(batch_files)
+            yield {
+                "type": "batch_done",
+                "group": group,
+                "files": list(batch_files.keys()),
+                "batch": batch_num,
+                "total_batches": total_batches,
+            }
 
-        print(f"[generator] group='{group}' generated={list(batch_files.keys())}")
-        file_tree.update(batch_files)
+    yield {"type": "complete", "file_tree": file_tree}
 
-    return file_tree
+
+async def generate_scaffold(hydrated: dict, manifest: list[dict]) -> dict[str, str]:
+    """Non-streaming wrapper used by the sync bootstrap path."""
+    async for event in stream_generate_scaffold(hydrated, manifest):
+        if event["type"] == "complete":
+            return event["file_tree"]
+    return {}
 
 
 def _parse_files(raw: str) -> dict[str, str]:

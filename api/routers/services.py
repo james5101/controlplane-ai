@@ -260,10 +260,15 @@ async def bootstrap_generate(
     session = _get_session(session_id, user["active_workspace"])
 
     async def event_stream():
-        from api.agent.generator import generate_scaffold
+        from api.agent.generator import stream_generate_scaffold
         try:
             yield f"data: {json.dumps({'step': 'generator', 'status': 'running'})}\n\n"
-            file_tree = await generate_scaffold(session["hydrated"], session["manifest"])
+            file_tree: dict = {}
+            async for event in stream_generate_scaffold(session["hydrated"], session["manifest"]):
+                if event["type"] == "complete":
+                    file_tree = event["file_tree"]
+                else:
+                    yield f"data: {json.dumps({'step': 'generator', 'status': 'progress', **event})}\n\n"
             session["file_tree"] = file_tree
             yield f"data: {json.dumps({'step': 'generator', 'status': 'done', 'output': {'files': list(file_tree.keys())}})}\n\n"
         except Exception as e:

@@ -102,6 +102,7 @@ export default function NewServicePage() {
   const [manifest, setManifest] = useState<ManifestEntry[]>([]);
   const [generatedFiles, setGeneratedFiles] = useState<string[]>([]);
   const [generateStep, setGenerateStep] = useState<Step>(makeStep("generator"));
+  const [generateProgress, setGenerateProgress] = useState<string | null>(null);
   const [publishSteps, setPublishSteps] = useState<Step[]>([
     makeStep("runbook_generator"),
     makeStep("github_pusher"),
@@ -128,6 +129,7 @@ export default function NewServicePage() {
     setManifest([]);
     setGeneratedFiles([]);
     setGenerateStep(makeStep("generator"));
+    setGenerateProgress(null);
     setPublishSteps([makeStep("runbook_generator"), makeStep("github_pusher")]);
     setRepoUrl(null);
     setPrUrl(null);
@@ -175,10 +177,18 @@ export default function NewServicePage() {
         if (step === "generator") {
           if (status === "running") {
             updateStep(setGenerateStep, { status: "running" });
+          } else if (status === "progress") {
+            if (ev.type === "layer_start") {
+              const groups = ev.groups as string[];
+              setGenerateProgress(`Layer ${ev.layer}/${ev.total_layers} — ${groups.join(", ")}`);
+            } else if (ev.type === "batch_done") {
+              setGenerateProgress(`Batch ${ev.batch}/${ev.total_batches} done — ${ev.group}`);
+            }
           } else if (status === "done") {
             const files = (ev.output as { files: string[] } | undefined)?.files ?? [];
             updateStep(setGenerateStep, { status: "done", output: { files } });
             setGeneratedFiles(files);
+            setGenerateProgress(null);
           }
         }
       });
@@ -357,10 +367,13 @@ export default function NewServicePage() {
         <div className="mb-8">
           <h1 className="text-2xl font-bold text-gray-900">Generating files…</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Writing {manifest.length} files in dependency order. This usually takes 30–90 seconds.
+            Writing {manifest.length} files in parallel layers.
           </p>
         </div>
         <StepProgress steps={[generateStep]} />
+        {generateProgress && (
+          <p className="mt-3 text-xs text-gray-500 font-mono">{generateProgress}</p>
+        )}
       </div>
     );
   }
