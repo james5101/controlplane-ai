@@ -56,21 +56,22 @@ async def push_to_github(
             else:
                 raise RuntimeError(f"Failed to create repo '{repo_name}': {e}") from e
 
-    # ── Stub initial commit on main ──────────────────────────────────────────
-    # Creates the base branch so we have something to PR against.
-    stub_readme = f"# {repo_name}\n\nScaffolded by [ControlPlane AI](https://github.com/james5101/controlplane-ai).\n"
-    stub_tree = repo.create_git_tree([
-        InputGitTreeElement(path="README.md", mode="100644", type="blob", content=stub_readme)
-    ])
-    stub_commit = repo.create_git_commit(
-        message="chore: initial commit",
-        tree=stub_tree,
-        parents=[],
+    # ── Initial commit via Contents API ─────────────────────────────────────
+    # create_file() works on empty repos; the Git tree API returns 409 if the
+    # repo has no objects yet.
+    stub_readme = (
+        f"# {repo_name}\n\n"
+        "Scaffolded by [ControlPlane AI](https://github.com/james5101/controlplane-ai).\n"
     )
-    repo.create_git_ref(ref="refs/heads/main", sha=stub_commit.sha)
+    result = repo.create_file(
+        path="README.md",
+        message="chore: initial commit",
+        content=stub_readme,
+    )
+    initial_sha = result["commit"].sha
+    default_branch = repo.default_branch
 
     # ── Full scaffold commit on PR branch ────────────────────────────────────
-    # Build tree from all generated files (no base_tree — our files are complete).
     tree_elements = [
         InputGitTreeElement(path=path, mode="100644", type="blob", content=content)
         for path, content in file_tree.items()
@@ -79,7 +80,7 @@ async def push_to_github(
     scaffold_commit = repo.create_git_commit(
         message="chore: initial infrastructure scaffold (ControlPlane AI)",
         tree=scaffold_tree,
-        parents=[stub_commit],
+        parents=[repo.get_git_commit(initial_sha)],
     )
 
     branch_name = "controlplane/initial-scaffold"
@@ -96,7 +97,7 @@ async def push_to_github(
             f"**Environments:** {', '.join(intent.get('environments', []))}\n"
         ),
         head=branch_name,
-        base="main",
+        base=default_branch,
     )
 
     return {"repo_url": repo.html_url, "pr_url": pr.html_url}
