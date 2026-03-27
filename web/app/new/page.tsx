@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { planService, streamGenerate, streamPublish, ManifestEntry } from "@/lib/api";
+import { planService, streamGenerate, streamPublish, ManifestEntry, GenerateMode } from "@/lib/api";
 import { StepProgress, Step, StepStatus } from "@/components/step-progress";
 
 const EXAMPLES = [
@@ -104,6 +104,7 @@ export default function NewServicePage() {
   const [generateStep, setGenerateStep] = useState<Step>(makeStep("generator"));
   const [generateProgress, setGenerateProgress] = useState<string | null>(null);
   const [lastStableState, setLastStableState] = useState<PageState>("form");
+  const [generateMode, setGenerateMode] = useState<GenerateMode>("full");
   const [publishSteps, setPublishSteps] = useState<Step[]>([
     makeStep("runbook_generator"),
     makeStep("github_pusher"),
@@ -132,6 +133,7 @@ export default function NewServicePage() {
     setGeneratedFiles([]);
     setGenerateStep(makeStep("generator"));
     setGenerateProgress(null);
+    setGenerateMode("full");
     setPublishSteps([makeStep("runbook_generator"), makeStep("github_pusher")]);
     setRepoUrl(null);
     setPrUrl(null);
@@ -166,8 +168,9 @@ export default function NewServicePage() {
   }
 
   // ── Phase 2: Generate ────────────────────────────────────────────────────────
-  async function handleApproveAndGenerate() {
+  async function handleApproveAndGenerate(mode: GenerateMode) {
     if (!sessionId) return;
+    setGenerateMode(mode);
     setLastStableState("plan_review");
     setGenerateStep(makeStep("generator"));
     setPageState("generating");
@@ -202,7 +205,7 @@ export default function NewServicePage() {
             setGenerateProgress(null);
           }
         }
-      });
+      }, mode);
 
       // If we got here without an error event, move to review
       setPageState((prev) => (prev === "generating" ? "files_review" : prev));
@@ -358,16 +361,32 @@ export default function NewServicePage() {
           </CardContent>
         </Card>
 
-        <div className="flex gap-3">
-          <Button onClick={handleApproveAndGenerate}>
-            <CheckCircle2 className="h-4 w-4" />
-            Approve &amp; generate files
-          </Button>
-          <Button variant="outline" onClick={handleReset}>
-            <XCircle className="h-4 w-4" />
-            Cancel
-          </Button>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <button
+            onClick={() => handleApproveAndGenerate("scaffold")}
+            className="flex flex-col items-start gap-1 rounded-lg border-2 border-gray-200 bg-white p-4 text-left hover:border-blue-400 hover:bg-blue-50 transition-colors"
+          >
+            <span className="text-sm font-semibold text-gray-900">Scaffold only</span>
+            <span className="text-xs text-gray-500">
+              Instant — creates the file structure with stub placeholders. No code generated.
+              Good for reviewing structure or adding content manually.
+            </span>
+          </button>
+          <button
+            onClick={() => handleApproveAndGenerate("full")}
+            className="flex flex-col items-start gap-1 rounded-lg border-2 border-gray-200 bg-white p-4 text-left hover:border-blue-400 hover:bg-blue-50 transition-colors"
+          >
+            <span className="text-sm font-semibold text-gray-900">Full generation</span>
+            <span className="text-xs text-gray-500">
+              2–5 min — generates complete, production-ready code for every file
+              following org conventions and security best practices.
+            </span>
+          </button>
         </div>
+        <Button variant="outline" size="sm" onClick={handleReset} className="mt-1">
+          <XCircle className="h-4 w-4" />
+          Cancel
+        </Button>
       </div>
     );
   }
@@ -377,9 +396,13 @@ export default function NewServicePage() {
     return (
       <div className="p-8 max-w-2xl mx-auto">
         <div className="mb-8">
-          <h1 className="text-2xl font-bold text-gray-900">Generating files…</h1>
+          <h1 className="text-2xl font-bold text-gray-900">
+            {generateMode === "scaffold" ? "Building scaffold…" : "Generating files…"}
+          </h1>
           <p className="text-sm text-gray-500 mt-1">
-            Writing {manifest.length} files in parallel layers.
+            {generateMode === "scaffold"
+              ? `Creating ${manifest.length} stub files instantly.`
+              : `Writing ${manifest.length} files with full content. This takes 2–5 minutes.`}
           </p>
         </div>
         <StepProgress steps={[generateStep]} />
@@ -402,7 +425,10 @@ export default function NewServicePage() {
         <Card className="mb-4 border-green-200 bg-green-50">
           <CardContent className="py-3">
             <p className="text-sm text-green-800">
-              <span className="font-semibold">{generatedFiles.length} files generated.</span>{" "}
+              <span className="font-semibold">{generatedFiles.length} files {generateMode === "scaffold" ? "scaffolded" : "generated"}.</span>{" "}
+              {generateMode === "scaffold" && (
+                <span className="text-green-700">Stubs only — no code content. </span>
+              )}
               Approve to generate the runbook and push everything to GitHub.
             </p>
           </CardContent>

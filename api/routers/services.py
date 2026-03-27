@@ -3,7 +3,7 @@ import logging
 import uuid
 from datetime import datetime, timezone, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from api.agent.orchestrator import run_bootstrap_agent, stream_bootstrap_agent
@@ -251,26 +251,37 @@ async def bootstrap_plan(
 @router.post("/bootstrap/{session_id}/generate")
 async def bootstrap_generate(
     session_id: str,
+    mode: str = Query(default="full", pattern="^(full|scaffold)$"),
     user: dict = Depends(require_workspace),
 ):
     """
     Phase 2: Generate file content for all planned files (SSE stream).
-    User reviews the generated file list and approves before publish.
+
+    mode=full      — full Claude generation (production-ready code, slow)
+    mode=scaffold  — instant stubs from manifest purposes (fast, free)
     """
     session = _get_session(session_id, user["active_workspace"])
 
     async def event_stream():
-        from api.agent.generator import stream_generate_scaffold
         try:
-            yield f"data: {json.dumps({'step': 'generator', 'status': 'running'})}\n\n"
-            file_tree: dict = {}
-            async for event in stream_generate_scaffold(session["hydrated"], session["manifest"]):
-                if event["type"] == "complete":
-                    file_tree = event["file_tree"]
-                else:
-                    yield f"data: {json.dumps({'step': 'generator', 'status': 'progress', **event})}\n\n"
-            session["file_tree"] = file_tree
-            yield f"data: {json.dumps({'step': 'generator', 'status': 'done', 'output': {'files': list(file_tree.keys())}})}\n\n"
+            yield f"data: {json.dumps({'step': 'generator', 'status': 'running', 'mode': mode})}\n\n"
+
+            if mode == "scaffold":
+                from api.agent.scaffold_stubs import generate_stubs
+                file_tree = generate_stubs(session["manifest"])
+                session["file_tree"] = file_tree
+                yield f"data: {json.dumps({'step': 'generator', 'status': 'done', 'output': {'files': list(file_tree.keys())}})}\n\n"
+            else:
+                from api.agent.generator import stream_generate_scaffold
+                file_tree: dict = {}
+                async for event in stream_generate_scaffold(session["hydrated"], session["manifest"]):
+                    if event["type"] == "complete":
+                        file_tree = event["file_tree"]
+                    else:
+                        yield f"data: {json.dumps({'step': 'generator', 'status': 'progress', **event})}\n\n"
+                session["file_tree"] = file_tree
+                yield f"data: {json.dumps({'step': 'generator', 'status': 'done', 'output': {'files': list(file_tree.keys())}})}\n\n"
+
         except Exception as e:
             yield f"data: {json.dumps({'step': 'error', 'message': str(e)})}\n\n"
 

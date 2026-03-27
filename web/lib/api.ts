@@ -191,11 +191,14 @@ export async function planService(payload: BootstrapRequest): Promise<PlanRespon
   return res.json();
 }
 
+export type GenerateMode = "full" | "scaffold";
+
 export async function streamGenerate(
   sessionId: string,
-  onEvent: (event: Record<string, unknown>) => void
+  onEvent: (event: Record<string, unknown>) => void,
+  mode: GenerateMode = "full"
 ): Promise<void> {
-  const res = await fetch(`${API_URL}/services/bootstrap/${sessionId}/generate`, {
+  const res = await fetch(`${API_URL}/services/bootstrap/${sessionId}/generate?mode=${mode}`, {
     method: "POST",
     credentials: "include",
   });
