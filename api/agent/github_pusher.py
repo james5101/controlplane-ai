@@ -1,20 +1,19 @@
 """
 Step 5: GitHub Pusher
 
-Creates a new GitHub repository, commits the generated scaffold as a
-single commit using the Git tree API, and opens a pull request.
+Creates a new GitHub repository, commits the generated scaffold, and opens
+a pull request.
 
-Repo creation flow (avoids auto_init timing races):
-  1. Create empty repo (no auto_init)
-  2. Create a stub initial commit on main — establishes the base branch
-  3. Create the full scaffold commit parented to the stub — the PR branch
-  4. Open PR: controlplane/initial-scaffold → main
+Uses only the Contents API (PUT /contents/{path}) and the Refs API
+(POST /git/refs) — the two endpoints that reliably work with standard OAuth
+tokens on brand-new repos. The git Trees/Blobs API and GraphQL
+createCommitOnBranch both returned errors on fresh repos.
 """
 
 import asyncio
 import secrets
 
-from github import Github, GithubException, InputGitTreeElement
+from github import Github, GithubException
 
 
 def _is_name_conflict(exc: GithubException) -> bool:
@@ -30,7 +29,6 @@ async def push_to_github(
     github_org_login: str,
 ) -> dict:
     gh = Github(github_token)
-
     base_name = intent.get("repo_name_hint", "new-service-infra")
 
     # Resolve owner — org workspace first, fall back to authenticated user
@@ -39,7 +37,7 @@ async def push_to_github(
     except GithubException:
         owner = gh.get_user()
 
-    # Try base name, then base-XXXX with a random hex suffix on conflict
+    # Create repo — retry with hex suffix on name conflict
     repo = None
     repo_name = base_name
     for attempt in range(5):
@@ -48,7 +46,7 @@ async def push_to_github(
                 name=repo_name,
                 description="Scaffolded by ControlPlane AI",
                 private=True,
-                auto_init=False,  # We create the initial commit ourselves
+                auto_init=True,
             )
             break
         except GithubException as e:
@@ -57,53 +55,76 @@ async def push_to_github(
             else:
                 raise RuntimeError(f"Failed to create repo '{repo_name}': {e}") from e
 
-    # ── Initial commit via Contents API ─────────────────────────────────────
-    # create_file() works on truly empty repos; the git tree API returns 409
-    # before the first commit exists.
-    stub_readme = (
-        f"# {repo_name}\n\n"
-        "Scaffolded by [ControlPlane AI](https://github.com/james5101/controlplane-ai).\n"
-    )
-    result = repo.create_file(
-        path="README.md",
-        message="chore: initial commit",
-        content=stub_readme,
-    )
-    initial_sha = result["commit"].sha
+    # Wait for auto_init commit to propagate
     default_branch = repo.default_branch
-
-    # Refresh the repo object — the in-memory object can be stale immediately
-    # after creation and cause the git tree API to return 404.
-    repo = gh.get_repo(repo.full_name)
-
-    # Get the tree from the initial commit so we have a valid base_tree SHA.
-    # create_git_tree on a brand-new repo sometimes returns 404 without one.
-    for attempt in range(6):
+    head_sha = None
+    for attempt in range(10):
         try:
-            initial_commit = repo.get_git_commit(initial_sha)
-            base_tree = initial_commit.tree
+            ref = repo.get_git_ref(f"heads/{default_branch}")
+            head_sha = ref.object.sha
             break
         except GithubException:
-            if attempt == 5:
-                raise RuntimeError("Timed out resolving initial commit tree")
+            if attempt == 9:
+                raise RuntimeError("Timed out waiting for initial commit")
             await asyncio.sleep(2)
 
-    # ── Full scaffold commit on PR branch ────────────────────────────────────
-    tree_elements = [
-        InputGitTreeElement(path=path, mode="100644", type="blob", content=content)
-        for path, content in file_tree.items()
-    ]
-    scaffold_tree = repo.create_git_tree(tree_elements, base_tree)
-    scaffold_commit = repo.create_git_commit(
-        message="chore: initial infrastructure scaffold (ControlPlane AI)",
-        tree=scaffold_tree,
-        parents=[initial_commit],
-    )
-
+    # Create PR branch from default branch HEAD (Refs API — distinct from Trees API)
     branch_name = "controlplane/initial-scaffold"
-    repo.create_git_ref(ref=f"refs/heads/{branch_name}", sha=scaffold_commit.sha)
+    repo.create_git_ref(ref=f"refs/heads/{branch_name}", sha=head_sha)
 
-    # ── Open PR ──────────────────────────────────────────────────────────────
+    # Push every file via Contents API.
+    # Retries on transient 404s (branch ref lag) and falls back to update_file
+    # on 422 (file already exists from auto_init, e.g. README.md).
+    # Failures are collected and logged but don't abort the push — the PR is
+    # always created so the user gets a link even if a few files missed.
+    import time
+
+    def _push_one(path: str, content: str) -> str | None:
+        """Returns error string on failure, None on success."""
+        for attempt in range(4):
+            try:
+                repo.create_file(
+                    path=path,
+                    message=f"chore: add {path}",
+                    content=content,
+                    branch=branch_name,
+                )
+                return None
+            except GithubException as e:
+                if e.status == 422:
+                    # File already exists — update instead
+                    try:
+                        existing = repo.get_contents(path, ref=branch_name)
+                        repo.update_file(
+                            path=path,
+                            message=f"chore: add {path}",
+                            content=content,
+                            sha=existing.sha,
+                            branch=branch_name,
+                        )
+                        return None
+                    except GithubException as ue:
+                        return f"{path}: update failed ({ue.status})"
+                elif e.status in (404, 409, 503) and attempt < 3:
+                    time.sleep(2 * (attempt + 1))
+                else:
+                    return f"{path}: {e.status} {e.data}"
+        return f"{path}: max retries exceeded"
+
+    def _push_files():
+        failures = []
+        for path, content in file_tree.items():
+            err = _push_one(path, content)
+            if err:
+                print(f"[github_pusher] WARNING: {err}")
+                failures.append(err)
+        return failures
+
+    failures = await asyncio.to_thread(_push_files)
+    if failures:
+        print(f"[github_pusher] {len(failures)} file(s) failed: {failures}")
+
+    # Open PR
     pr = repo.create_pull(
         title="chore: initial infrastructure scaffold (ControlPlane AI)",
         body=(
