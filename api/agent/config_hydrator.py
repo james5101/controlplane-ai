@@ -26,7 +26,30 @@ DEFAULT_ORG_CONFIG = {
     "required_tags": {
         "ManagedBy": "controlplane-ai",
     },
+    "reference_repos": [],
 }
+
+
+def is_config_thin(org_config: dict) -> bool:
+    """Return True if the org config looks like it hasn't been customised.
+
+    "Thin" means: no non-default naming, no security rules, no private modules,
+    and no environments with real account IDs configured.
+    """
+    if org_config.get("modules"):
+        return False
+    security = org_config.get("security", {})
+    if security:
+        return False
+    envs = org_config.get("environments", {})
+    if isinstance(envs, dict):
+        for env_cfg in envs.values():
+            if isinstance(env_cfg, dict) and env_cfg.get("aws_account_id"):
+                return False
+    naming = org_config.get("naming", {})
+    if naming.get("repo", "{service}-infra") != "{service}-infra":
+        return False
+    return True
 
 
 async def hydrate_config(org_id: str, intent: dict) -> dict:

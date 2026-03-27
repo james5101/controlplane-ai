@@ -5,6 +5,9 @@ Takes the parsed intent and org config and produces an annotated file manifest �
 a precise list of every file that should exist in the repository, what each file
 does, and how files relate to each other.
 
+Uses Claude tool use to force a typed manifest response — no JSON parsing,
+no markdown stripping, no fragile cleanup.
+
 This step owns all structural / architectural decisions. The Generator's job is
 purely content. Separating them means:
   - Structure follows best practices regardless of stack (Terraform, CDK, Pulumi,
@@ -14,7 +17,6 @@ purely content. Separating them means:
 """
 
 import json
-import re
 import anthropic
 
 client = anthropic.AsyncAnthropic()
@@ -152,25 +154,59 @@ SECURITY — NON-NEGOTIABLE ON ALL STACKS
 - Use variable references or well-documented TODO placeholders for customer-specific values
 
 ════════════════════════════════════════════════════════
-OUTPUT FORMAT
+GROUP NAMING CONVENTION
 ════════════════════════════════════════════════════════
 
-Return ONLY a valid JSON array. No markdown, no explanation, no preamble.
-
-Each element:
-{
-  "path": "relative/path/to/file.ext",
-  "purpose": "one sentence describing what this file does and why it exists",
-  "group": "logical group for batched generation (e.g. modules/compute, environments/dev, ci, root)",
-  "dependencies": ["group/that/must/exist/first", ...]
-}
-
-Group naming convention:
   modules/{component}   — one module's files
   environments/{env}    — one environment's files
   ci                    — all CI/CD workflow files
   root                  — top-level files (.gitignore, README, versions.tf)
+
+Call submit_manifest with the complete, comprehensive file manifest.
+Include every file — modules, environments, CI workflows, config files, .gitignore, README.
+Do not omit backend configs, version files, or supporting files.
 """
+
+_MANIFEST_TOOL = {
+    "name": "submit_manifest",
+    "description": "Submit the complete annotated file manifest for the repository.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "files": {
+                "type": "array",
+                "description": "Every file that should exist in the repository.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Relative file path from repo root, e.g. modules/compute/main.tf",
+                        },
+                        "purpose": {
+                            "type": "string",
+                            "description": "One sentence describing what this file does and why it exists.",
+                        },
+                        "group": {
+                            "type": "string",
+                            "description": (
+                                "Logical generation group. Examples: modules/compute, "
+                                "environments/dev, ci, root."
+                            ),
+                        },
+                        "dependencies": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Groups that must be generated before this one.",
+                        },
+                    },
+                    "required": ["path", "purpose", "group", "dependencies"],
+                },
+            }
+        },
+        "required": ["files"],
+    },
+}
 
 
 def _build_planner_prompt(intent: dict, params: dict, org_config: dict) -> str:
@@ -211,10 +247,6 @@ def _build_planner_prompt(intent: dict, params: dict, org_config: dict) -> str:
 
 ## Org module catalog (prefer these over public registry when available)
 {modules_text}
-
-Produce the complete, comprehensive file manifest for this repository.
-Include every file — modules, environments, CI workflows, config files, .gitignore, README.
-Do not omit backend configs, version files, or supporting files.
 """
 
 
@@ -234,34 +266,14 @@ async def plan_scaffold(hydrated: dict) -> list[dict]:
         model="claude-sonnet-4-6",
         max_tokens=8192,
         system=SYSTEM_PROMPT,
+        tools=[_MANIFEST_TOOL],
+        tool_choice={"type": "tool", "name": "submit_manifest"},
         messages=[{"role": "user", "content": prompt}],
     )
 
-    raw = message.content[0].text.strip()
-
-    # Strip markdown code fences (```json ... ``` or ``` ... ```)
-    if raw.startswith("```"):
-        raw = re.sub(r"^```[a-z]*\n?", "", raw)
-        raw = re.sub(r"\n?```$", "", raw).strip()
-
-    # Remove trailing commas before ] or } — handles nested structures and multiline
-    raw = re.sub(r",(\s*[\]\}])", r"\1", raw)
-
-    # Strip any trailing content after the closing ] of the top-level array
-    bracket_end = raw.rfind("]")
-    if bracket_end != -1:
-        raw = raw[: bracket_end + 1]
-
-    try:
-        manifest = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        # Show context around the error position to aid debugging
-        pos = exc.pos if hasattr(exc, "pos") else 0
-        snippet = raw[max(0, pos - 120) : pos + 120]
-        raise RuntimeError(
-            f"Scaffold planner returned invalid JSON at char {pos}: {exc.msg}\n\n"
-            f"Context around error:\n...{snippet}..."
-        ) from exc
-    print(f"[scaffold_planner] planned {len(manifest)} files across "
-          f"{len({f['group'] for f in manifest})} groups")
+    manifest = message.content[0].input["files"]
+    print(
+        f"[scaffold_planner] planned {len(manifest)} files across "
+        f"{len({f['group'] for f in manifest})} groups"
+    )
     return manifest

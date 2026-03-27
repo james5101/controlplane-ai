@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Sparkles, ChevronRight, ExternalLink, FileText, CheckCircle2, XCircle } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Sparkles, ChevronRight, ExternalLink, FileText, CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -13,6 +13,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { planService, streamGenerate, streamPublish, ManifestEntry, GenerateMode } from "@/lib/api";
+import Link from "next/link";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 import { StepProgress, Step, StepStatus } from "@/components/step-progress";
 
 const EXAMPLES = [
@@ -112,6 +115,24 @@ export default function NewServicePage() {
   const [repoUrl, setRepoUrl] = useState<string | null>(null);
   const [prUrl, setPrUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showConfigBanner, setShowConfigBanner] = useState(false);
+
+  useEffect(() => {
+    fetch(`${API_URL}/orgs/config`, { credentials: "include" })
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!data?.config_yaml) return;
+        // Show banner if config has no real conventions and no reference_repos
+        const yaml: string = data.config_yaml;
+        const hasReferenceRepos = /reference_repos\s*:\s*\n\s+-/.test(yaml);
+        const hasModules = /modules\s*:\s*\n\s+\w/.test(yaml);
+        const hasAccountId = /aws_account_id\s*:\s*\d{12}/.test(yaml);
+        const hasCustomNaming = /repo\s*:\s*(?!.*\{service\}-infra)/.test(yaml);
+        const thin = !hasReferenceRepos && !hasModules && !hasAccountId && !hasCustomNaming;
+        setShowConfigBanner(thin);
+      })
+      .catch(() => {});
+  }, []);
 
   function updateStep<T extends Step>(setter: React.Dispatch<React.SetStateAction<T>>, patch: Partial<T>) {
     setter((prev) => ({ ...prev, ...patch }));
@@ -268,6 +289,34 @@ export default function NewServicePage() {
             and ask you to approve before generating or pushing anything.
           </p>
         </div>
+
+        {showConfigBanner && (
+          <div className="mb-4 flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-500" />
+            <div className="flex-1 space-y-1">
+              <p className="font-medium">No org conventions configured</p>
+              <p className="text-amber-700 text-xs">
+                Generation will use generic defaults. Add{" "}
+                <Link href="/orgs/analyze" className="underline hover:text-amber-900">
+                  reference repos
+                </Link>{" "}
+                so the analyzer can infer your conventions, or{" "}
+                <Link href="/orgs/config" className="underline hover:text-amber-900">
+                  edit your org config
+                </Link>{" "}
+                directly.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowConfigBanner(false)}
+              className="text-amber-400 hover:text-amber-600 text-lg leading-none"
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <Card>

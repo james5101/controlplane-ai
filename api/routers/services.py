@@ -227,12 +227,14 @@ async def bootstrap_plan(
     from api.agent.intent_parser import parse_intent
     from api.agent.config_hydrator import hydrate_config
     from api.agent.scaffold_planner import plan_scaffold
+    from api.agent.orchestrator import _maybe_auto_analyze
 
     _purge_expired_sessions()
 
     intent = await parse_intent(payload.request)
     intent["original_request"] = payload.request
     hydrated = await hydrate_config(org_id=user["active_workspace"], intent=intent)
+    hydrated = await _maybe_auto_analyze(hydrated, user["github_token"])
     manifest = await plan_scaffold(hydrated)
 
     session_id = str(uuid.uuid4())

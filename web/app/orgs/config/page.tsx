@@ -217,4 +217,9 @@ const SCHEMA_REFERENCE = [
     key: "required_tags",
     description: "Tags applied to all provisioned resources.",
   },
+  {
+    key: "reference_repos",
+    description:
+      "List of existing GitHub repo URLs for the Repo Analyzer to scan. When your org config is sparse, the analyzer runs automatically before each bootstrap and merges inferred conventions.",
+  },
 ];
