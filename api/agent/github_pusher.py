@@ -11,6 +11,7 @@ Repo creation flow (avoids auto_init timing races):
   4. Open PR: controlplane/initial-scaffold → main
 """
 
+import asyncio
 import secrets
 
 from github import Github, GithubException, InputGitTreeElement
@@ -57,8 +58,8 @@ async def push_to_github(
                 raise RuntimeError(f"Failed to create repo '{repo_name}': {e}") from e
 
     # ── Initial commit via Contents API ─────────────────────────────────────
-    # create_file() works on empty repos; the Git tree API returns 409 if the
-    # repo has no objects yet.
+    # create_file() works on truly empty repos; the git tree API returns 409
+    # before the first commit exists.
     stub_readme = (
         f"# {repo_name}\n\n"
         "Scaffolded by [ControlPlane AI](https://github.com/james5101/controlplane-ai).\n"
@@ -71,16 +72,32 @@ async def push_to_github(
     initial_sha = result["commit"].sha
     default_branch = repo.default_branch
 
+    # Refresh the repo object — the in-memory object can be stale immediately
+    # after creation and cause the git tree API to return 404.
+    repo = gh.get_repo(repo.full_name)
+
+    # Get the tree from the initial commit so we have a valid base_tree SHA.
+    # create_git_tree on a brand-new repo sometimes returns 404 without one.
+    for attempt in range(6):
+        try:
+            initial_commit = repo.get_git_commit(initial_sha)
+            base_tree = initial_commit.tree
+            break
+        except GithubException:
+            if attempt == 5:
+                raise RuntimeError("Timed out resolving initial commit tree")
+            await asyncio.sleep(2)
+
     # ── Full scaffold commit on PR branch ────────────────────────────────────
     tree_elements = [
         InputGitTreeElement(path=path, mode="100644", type="blob", content=content)
         for path, content in file_tree.items()
     ]
-    scaffold_tree = repo.create_git_tree(tree_elements)
+    scaffold_tree = repo.create_git_tree(tree_elements, base_tree)
     scaffold_commit = repo.create_git_commit(
         message="chore: initial infrastructure scaffold (ControlPlane AI)",
         tree=scaffold_tree,
-        parents=[repo.get_git_commit(initial_sha)],
+        parents=[initial_commit],
     )
 
     branch_name = "controlplane/initial-scaffold"
